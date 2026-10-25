@@ -36,7 +36,8 @@ import {
 import { formatTaka } from '../domain/money';
 import { formatDisplayDate, getTodayDateString } from '../domain/dates';
 import { buildBanglaWhatsAppReminder, normalizeWhatsAppPhone } from '../domain/milestones';
-import { invertProposalDirection } from '../domain/connections';
+import { invertProposalDirection, formatConnectionCode, validateConnectionCode } from '../domain/connections';
+import { repository } from '../data/repository';
 
 interface PeopleViewProps {
   people: PersonRecord[];
@@ -60,9 +61,12 @@ interface PeopleViewProps {
     type: 'give' | 'take',
     amount: number,
     date: string,
-    note?: string
+    note?: string,
+    isRepayment?: boolean,
+    payMethodId?: string
   ) => void;
   onAcceptProposal?: (proposalId: string, payMethodId: string) => void;
+  onDisputeProposal?: (proposalId: string, reason: string) => void;
   onRejectProposal?: (proposalId: string) => void;
 }
 
@@ -84,6 +88,7 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
   onDeleteConnection,
   onCreateProposal,
   onAcceptProposal,
+  onDisputeProposal,
   onRejectProposal
 }) => {
   // Top sub-tab: 'local' (People ledgers) vs 'connections' (EcO-to-EcO)
@@ -128,19 +133,28 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
   const [connectNameInput, setConnectNameInput] = useState<string>('');
   const [connectError, setConnectError] = useState<string | null>(null);
   const [copiedMyCode, setCopiedMyCode] = useState<boolean>(false);
+  const [copiedInviteLink, setCopiedInviteLink] = useState<boolean>(false);
+  const [isSearchingPeer, setIsSearchingPeer] = useState<boolean>(false);
+  const [verifiedPeer, setVerifiedPeer] = useState<{ code: string; displayName?: string; email?: string } | null>(null);
 
   // Proposal Creation Modal
   const [showProposeModal, setShowProposeModal] = useState<boolean>(false);
   const [proposalPeer, setProposalPeer] = useState<EcOConnection | null>(null);
+  const [proposalKind, setProposalKind] = useState<'loan' | 'repay'>('loan');
   const [proposalType, setProposalType] = useState<'give' | 'take'>('give');
   const [proposalAmountStr, setProposalAmountStr] = useState<string>('');
   const [proposalDate, setProposalDate] = useState<string>(getTodayDateString());
   const [proposalNote, setProposalNote] = useState<string>('');
+  const [selectedWalletForPropose, setSelectedWalletForPropose] = useState<string>(paymentMethods[0]?.id || '');
   const [proposalError, setProposalError] = useState<string | null>(null);
 
   // Proposal Acceptance Modal (Pick Wallet)
   const [acceptingProposal, setAcceptingProposal] = useState<EcOProposal | null>(null);
   const [selectedWalletForAccept, setSelectedWalletForAccept] = useState<string>(paymentMethods[0]?.id || '');
+
+  // Proposal Dispute Modal
+  const [disputingProposal, setDisputingProposal] = useState<EcOProposal | null>(null);
+  const [disputeReasonInput, setDisputeReasonInput] = useState<string>('');
 
   // Global Escape key listener
   useEffect(() => {
@@ -332,11 +346,45 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
     setTimeout(() => setCopiedMyCode(false), 2000);
   };
 
+  const handleCopyInviteLink = () => {
+    const inviteUrl = `${window.location.origin}/?connect=${myConnectionCode}`;
+    navigator.clipboard.writeText(inviteUrl);
+    setCopiedInviteLink(true);
+    setTimeout(() => setCopiedInviteLink(false), 2000);
+  };
+
+  const handleCodeInputChange = async (val: string) => {
+    const formatted = formatConnectionCode(val);
+    setConnectCodeInput(formatted);
+    setConnectError(null);
+
+    if (formatted.length >= 6) {
+      setIsSearchingPeer(true);
+      try {
+        const found = await repository.lookupConnectionCode(formatted);
+        setIsSearchingPeer(false);
+        if (found) {
+          setVerifiedPeer(found);
+          if (!connectNameInput && found.displayName) {
+            setConnectNameInput(found.displayName);
+          }
+        } else {
+          setVerifiedPeer(null);
+        }
+      } catch {
+        setIsSearchingPeer(false);
+        setVerifiedPeer(null);
+      }
+    } else {
+      setVerifiedPeer(null);
+    }
+  };
+
   const handleSendConnectionRequest = (e: React.FormEvent) => {
     e.preventDefault();
     setConnectError(null);
 
-    const code = connectCodeInput.trim().toUpperCase();
+    const code = formatConnectionCode(connectCodeInput);
     const name = connectNameInput.trim();
 
     if (!code) {
@@ -355,15 +403,20 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
     onCreateConnection?.(code, name);
     setConnectCodeInput('');
     setConnectNameInput('');
+    setVerifiedPeer(null);
     setShowConnectModal(false);
   };
 
-  const handleOpenProposeForPeer = (peer: EcOConnection) => {
+  const handleOpenProposeForPeer = (peer: EcOConnection, kind: 'loan' | 'repay' = 'loan') => {
     setProposalPeer(peer);
+    setProposalKind(kind);
     setProposalAmountStr('');
     setProposalNote('');
     setProposalError(null);
     setProposalDate(getTodayDateString());
+    setSelectedWalletForPropose(paymentMethods[0]?.id || '');
+    // If loan: default 'give' (I lent money). If repay: default 'give' (I repaid debt).
+    setProposalType('give');
     setShowProposeModal(true);
   };
 
@@ -384,7 +437,9 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
       proposalType,
       amount,
       proposalDate,
-      proposalNote.trim() || undefined
+      proposalNote.trim() || undefined,
+      proposalKind === 'repay',
+      selectedWalletForPropose
     );
 
     setShowProposeModal(false);
@@ -397,7 +452,31 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
     setAcceptingProposal(null);
   };
 
-  const pendingIncomingProposals = proposals.filter((p) => p.status === 'pending');
+  const handleSubmitDispute = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!disputingProposal) return;
+    if (!disputeReasonInput.trim()) return;
+
+    onDisputeProposal?.(disputingProposal.id, disputeReasonInput.trim());
+    setDisputingProposal(null);
+    setDisputeReasonInput('');
+  };
+
+  const isMySentProposal = (p: EcOProposal) =>
+    p.senderCode === myConnectionCode || (p.senderUserId && p.senderUserId === myConnectionCode);
+
+  const incomingPending = useMemo(
+    () => proposals.filter((p) => p.status === 'pending' && !isMySentProposal(p)),
+    [proposals, myConnectionCode]
+  );
+  const outgoingPending = useMemo(
+    () => proposals.filter((p) => p.status === 'pending' && isMySentProposal(p)),
+    [proposals, myConnectionCode]
+  );
+  const disputedProposals = useMemo(
+    () => proposals.filter((p) => p.status === 'disputed'),
+    [proposals]
+  );
 
   return (
     <div className="space-y-6 pb-28 lg:pb-12 animate-in fade-in duration-150">
@@ -434,7 +513,7 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
           >
             <Link2 className="w-3.5 h-3.5" />
             <span>EcO Connections</span>
-            {pendingIncomingProposals.length > 0 && (
+            {incomingPending.length > 0 && (
               <span className="w-2 h-2 rounded-full bg-[#73E3B4] animate-pulse" />
             )}
           </button>
@@ -692,91 +771,133 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
       {activeTab === 'connections' && (
         <div className="space-y-6">
           {/* Identity Card: My EcO Connection Code */}
-          <div className="bg-[#1A1C20] border border-[#3D4943]/40 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="space-y-1">
-              <span className="text-[11px] font-medium uppercase tracking-wider text-[#BCCAC1]">
+          <div className="bg-[#1A1C20] border border-[#3D4943]/40 rounded-xl p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1.5 flex-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[#73E3B4]">
                 My EcO Connection Code
               </span>
-              <div className="flex items-center gap-3">
-                <span className="font-mono text-xl font-bold text-[#73E3B4] tracking-wider">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span className="font-mono text-2xl font-bold text-[#E2E2E8] tracking-wider bg-[#0C0E12] px-3.5 py-1 rounded-lg border border-[#3D4943]/60 selection:bg-[#73E3B4]/30">
                   {myConnectionCode}
                 </span>
                 <button
                   type="button"
                   onClick={handleCopyMyCode}
-                  className="px-2.5 py-1 rounded-md bg-[#0C0E12] hover:bg-[#1E2024] text-[#E2E2E8] text-[11px] border border-[#3D4943]/40 flex items-center gap-1 transition-colors"
+                  className="px-3 py-1.5 rounded-lg bg-[#0C0E12] hover:bg-[#1E2024] text-[#E2E2E8] text-xs font-medium border border-[#3D4943]/50 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="Copy your connection code"
                 >
-                  {copiedMyCode ? <Check className="w-3 h-3 text-[#73E3B4]" /> : <Copy className="w-3 h-3" />}
-                  <span>{copiedMyCode ? 'Copied' : 'Copy'}</span>
+                  {copiedMyCode ? <Check className="w-3.5 h-3.5 text-[#73E3B4]" /> : <Copy className="w-3.5 h-3.5 text-[#87948C]" />}
+                  <span>{copiedMyCode ? 'Code Copied' : 'Copy Code'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCopyInviteLink}
+                  className="px-3 py-1.5 rounded-lg bg-[#0C0E12] hover:bg-[#1E2024] text-[#73E3B4] text-xs font-medium border border-[#73E3B4]/30 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="Copy 1-tap invitation link"
+                >
+                  {copiedInviteLink ? <Check className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
+                  <span>{copiedInviteLink ? 'Link Copied' : 'Copy Invite Link'}</span>
                 </button>
               </div>
-              <p className="text-[11px] text-[#87948C]">
-                Share this code with another EcO user to connect and propose shared transactions.
+              <p className="text-xs text-[#87948C] leading-relaxed max-w-xl">
+                Share this unique code or invite link with another EcO user. When connected, record a loan or repayment once, and both users confirm and track settlements in real time.
               </p>
             </div>
 
             <button
               type="button"
-              onClick={() => setShowConnectModal(true)}
-              className="px-4 py-2 rounded-lg bg-[#55C79A] hover:bg-[#73E3B4] text-[#003826] font-semibold text-xs flex items-center gap-2 transition-all self-start sm:self-auto shadow-sm"
+              onClick={() => {
+                setConnectError(null);
+                setVerifiedPeer(null);
+                setShowConnectModal(true);
+              }}
+              className="px-4 py-2.5 rounded-lg bg-[#55C79A] hover:bg-[#73E3B4] text-[#003826] font-semibold text-xs flex items-center justify-center gap-2 transition-all self-start md:self-center shadow-sm cursor-pointer shrink-0"
             >
-              <Link2 className="w-4 h-4" />
+              <Link2 className="w-4 h-4 stroke-[2.5]" />
               <span>Connect with User</span>
             </button>
           </div>
 
-          {/* Pending Proposals Section */}
-          {pendingIncomingProposals.length > 0 && (
-            <div className="space-y-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-[#73E3B4] flex items-center gap-1.5">
-                <Clock className="w-4 h-4" />
-                <span>Pending Transaction Proposals ({pendingIncomingProposals.length})</span>
-              </h3>
+          {/* SECTION 1: Incoming Proposals Awaiting Your Confirmation */}
+          {incomingPending.length > 0 && (
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-[#73E3B4] flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-[#73E3B4]" />
+                  <span>Incoming Proposals Awaiting Your Response ({incomingPending.length})</span>
+                </h3>
+                <span className="text-[11px] text-[#87948C]">Requires your confirmation before posting</span>
+              </div>
 
               <div className="space-y-2">
-                {pendingIncomingProposals.map((proposal) => {
-                  const isRecipientReceiving = proposal.originalSenderType === 'give';
+                {incomingPending.map((proposal) => {
+                  const isLentToMe = proposal.originalSenderType === 'give';
 
                   return (
                     <div
                       key={proposal.id}
-                      className="bg-[#1A1C20] border border-[#73E3B4]/40 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                      className="bg-[#1A1C20] border border-[#73E3B4]/40 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm"
                     >
-                      <div className="space-y-1">
+                      <div className="space-y-1.5">
                         <div className="flex items-center gap-2 text-xs font-semibold text-[#E2E2E8]">
                           <span>{proposal.senderName}</span>
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-[#0C0E12] text-[#BCCAC1] border border-[#3D4943]/40">
+                          {proposal.senderCode && (
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#0C0E12] text-[#73E3B4] border border-[#73E3B4]/30">
+                              {proposal.senderCode}
+                            </span>
+                          )}
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-[#0C0E12] text-[#87948C] border border-[#3D4943]/40">
                             {formatDisplayDate(proposal.date)}
                           </span>
-                        </div>
-                        <div className="text-xs text-[#BCCAC1]">
-                          {isRecipientReceiving ? (
-                            <span>
-                              Lent you <strong className="font-mono text-[#73E3B4]">{formatTaka(proposal.amount)}</strong> (You will owe {proposal.senderName})
-                            </span>
-                          ) : (
-                            <span>
-                              Borrowed <strong className="font-mono text-[#FFB4AB]">{formatTaka(proposal.amount)}</strong> from you
+                          {proposal.isRepayment && (
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-[#73E3B4]/10 text-[#73E3B4] font-semibold">
+                              Repayment
                             </span>
                           )}
                         </div>
+
+                        <div className="text-xs text-[#BCCAC1]">
+                          {proposal.isRepayment ? (
+                            <span>
+                              {proposal.originalSenderType === 'give' ? 'Repaid you ' : 'Recorded repayment of '}
+                              <strong className="font-mono text-[#73E3B4] text-sm">{formatTaka(proposal.amount)}</strong>
+                            </span>
+                          ) : isLentToMe ? (
+                            <span>
+                              Lent you <strong className="font-mono text-[#73E3B4] text-sm">{formatTaka(proposal.amount)}</strong> (You will owe {proposal.senderName})
+                            </span>
+                          ) : (
+                            <span>
+                              Borrowed <strong className="font-mono text-[#FFB4AB] text-sm">{formatTaka(proposal.amount)}</strong> from you ({proposal.senderName} will owe you)
+                            </span>
+                          )}
+                        </div>
+
                         {proposal.note && (
                           <div className="text-[11px] text-[#87948C] italic">"{proposal.note}"</div>
                         )}
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 self-start md:self-auto">
+                        <button
+                          type="button"
+                          onClick={() => setDisputingProposal(proposal)}
+                          className="px-3 py-1.5 rounded-lg bg-[#282A2E] hover:bg-[#FFB4AB]/20 text-[#FFB4AB] text-xs font-medium transition-colors cursor-pointer"
+                          title="Dispute proposed amount or terms"
+                        >
+                          Dispute
+                        </button>
                         <button
                           type="button"
                           onClick={() => onRejectProposal?.(proposal.id)}
-                          className="px-3 py-1.5 rounded-lg bg-[#282A2E] hover:bg-[#FFB4AB]/20 text-[#FFB4AB] text-xs font-medium transition-colors"
+                          className="px-3 py-1.5 rounded-lg bg-[#282A2E] hover:bg-[#FFB4AB]/20 text-[#87948C] hover:text-[#FFB4AB] text-xs font-medium transition-colors cursor-pointer"
                         >
                           Reject
                         </button>
                         <button
                           type="button"
                           onClick={() => setAcceptingProposal(proposal)}
-                          className="px-4 py-1.5 rounded-lg bg-[#55C79A] hover:bg-[#73E3B4] text-[#003826] font-semibold text-xs flex items-center gap-1.5 transition-all shadow-sm"
+                          className="px-4 py-1.5 rounded-lg bg-[#55C79A] hover:bg-[#73E3B4] text-[#003826] font-semibold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
                         >
                           <Check className="w-3.5 h-3.5" />
                           <span>Accept & Record</span>
@@ -789,53 +910,214 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
             </div>
           )}
 
-          {/* Connected Peers List */}
-          <div className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-[#BCCAC1]">
-              Connected EcO Peers ({connections.length})
-            </h3>
+          {/* SECTION 2: Outgoing Proposals Awaiting Mutual Confirmation */}
+          {outgoingPending.length > 0 && (
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-[#87948C] flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-[#87948C]" />
+                  <span>Outgoing Proposals Awaiting Confirmation ({outgoingPending.length})</span>
+                </h3>
+                <span className="text-[11px] text-[#87948C]">Not in confirmed debt balances yet</span>
+              </div>
+
+              <div className="space-y-2">
+                {outgoingPending.map((proposal) => (
+                  <div
+                    key={proposal.id}
+                    className="bg-[#1A1C20] border border-[#3D4943]/50 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 opacity-95"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 text-xs font-medium text-[#E2E2E8]">
+                        <span>To: <strong>{proposal.recipientName}</strong></span>
+                        {proposal.recipientCode && (
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#0C0E12] text-[#87948C] border border-[#3D4943]/40">
+                            {proposal.recipientCode}
+                          </span>
+                        )}
+                        <span className="text-[10px] px-2 py-0.5 rounded bg-[#0C0E12] text-[#87948C] border border-[#3D4943]/40">
+                          {formatDisplayDate(proposal.date)}
+                        </span>
+                        {proposal.isRepayment && (
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-[#73E3B4]/10 text-[#73E3B4]">
+                            Repayment
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="text-xs text-[#BCCAC1]">
+                        You proposed {proposal.isRepayment ? 'a repayment of' : (proposal.originalSenderType === 'give' ? 'lending' : 'borrowing')}{' '}
+                        <strong className="font-mono text-[#E2E2E8]">{formatTaka(proposal.amount)}</strong>.
+                        <span className="text-[#87948C] ml-1.5 italic">Awaiting confirmation from {proposal.recipientName}.</span>
+                      </div>
+
+                      {proposal.note && (
+                        <div className="text-[11px] text-[#87948C] italic">"{proposal.note}"</div>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => onRejectProposal?.(proposal.id)}
+                      className="px-3 py-1.5 rounded-lg bg-[#282A2E] hover:bg-[#FFB4AB]/20 text-[#87948C] hover:text-[#FFB4AB] text-xs font-medium self-start md:self-auto transition-colors cursor-pointer"
+                    >
+                      Cancel Proposal
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* SECTION 3: Disputed Proposals */}
+          {disputedProposals.length > 0 && (
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-[#FFB4AB] flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-[#FFB4AB]" />
+                  <span>Disputed Proposals ({disputedProposals.length})</span>
+                </h3>
+                <span className="text-[11px] text-[#FFB4AB]/80">Confirmed balances remain protected</span>
+              </div>
+
+              <div className="space-y-2">
+                {disputedProposals.map((proposal) => (
+                  <div
+                    key={proposal.id}
+                    className="bg-[#1A1C20] border border-[#FFB4AB]/40 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4"
+                  >
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-[#FFB4AB]">
+                        <span>Proposal of {formatTaka(proposal.amount)} between {proposal.senderName} & {proposal.recipientName}</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded bg-[#FFB4AB]/10 text-[#FFB4AB]">
+                          Disputed
+                        </span>
+                      </div>
+
+                      <div className="text-xs text-[#E2E2E8]">
+                        Dispute reason: <strong className="text-[#FFB4AB]">"{proposal.disputeReason || 'Terms or amount disputed'}"</strong>
+                      </div>
+
+                      <p className="text-[11px] text-[#87948C] leading-relaxed">
+                        This transaction was disputed and was not added to either ledger. Discuss with the other user to agree on the correct figure and submit a revised proposal.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => onRejectProposal?.(proposal.id)}
+                      className="px-3 py-1.5 rounded-lg bg-[#282A2E] hover:bg-[#FFB4AB]/20 text-[#FFB4AB] text-xs font-medium self-start md:self-auto transition-colors cursor-pointer"
+                    >
+                      Dismiss Proposal
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* SECTION 4: Connected EcO Peers */}
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-[#BCCAC1]">
+                Connected EcO Peers ({connections.length})
+              </h3>
+              <span className="text-[11px] text-[#87948C]">Shared reciprocal accounts</span>
+            </div>
 
             <div className="bg-[#1A1C20] border border-[#3D4943]/40 rounded-xl overflow-hidden divide-y divide-[#3D4943]/20">
               {connections.length === 0 ? (
-                <div className="p-8 text-center text-xs text-[#87948C]">
-                  No connected EcO users yet. Tap "Connect with User" to invite a friend using their code.
+                <div className="p-8 text-center text-xs text-[#87948C] space-y-2">
+                  <UserCheck className="w-8 h-8 text-[#3D4943] mx-auto" />
+                  <p className="max-w-md mx-auto">
+                    No connected EcO users yet. Tap <strong>"Connect with User"</strong> above or send your code <strong>{myConnectionCode}</strong> to a friend to link ledgers.
+                  </p>
                 </div>
               ) : (
-                connections.map((conn) => (
-                  <div
-                    key={conn.id}
-                    className="p-4 flex items-center justify-between hover:bg-[#1E2024]/60 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-full bg-[#0C0E12] border border-[#73E3B4]/40 flex items-center justify-center text-[#73E3B4]">
-                        <UserCheck className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <div className="text-xs font-semibold text-[#E2E2E8]">{conn.peerName}</div>
-                        <div className="text-[10px] font-mono text-[#87948C]">{conn.peerCode}</div>
-                      </div>
-                    </div>
+                connections.map((conn) => {
+                  const peerPerson = people.find(
+                    (p) =>
+                      (conn.peerCode && p.connectionCode === conn.peerCode) ||
+                      (conn.peerUserId && p.connectedUserId === conn.peerUserId) ||
+                      p.name.toLowerCase() === conn.peerName.toLowerCase()
+                  );
+                  const balance = peerPerson ? personBalances.get(peerPerson.id) || 0 : 0;
+                  const isSettled = balance === 0;
 
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenProposeForPeer(conn)}
-                        className="px-3 py-1.5 rounded-lg bg-[#0C0E12] hover:bg-[#1E2024] text-[#73E3B4] border border-[#3D4943]/40 text-xs font-medium flex items-center gap-1.5"
-                      >
-                        <Send className="w-3 h-3" />
-                        <span>Propose Transaction</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDeleteConnection?.(conn.id)}
-                        className="p-1.5 rounded-lg text-[#87948C] hover:text-[#FFB4AB] hover:bg-[#282A2E] transition-colors"
-                        title="Disconnect"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                  return (
+                    <div
+                      key={conn.id}
+                      className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#1E2024]/60 transition-colors"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-[#0C0E12] border border-[#73E3B4]/40 flex items-center justify-center text-[#73E3B4] font-bold text-sm shrink-0">
+                          {conn.peerName.slice(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-[#E2E2E8]">{conn.peerName}</span>
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#0C0E12] text-[#73E3B4] border border-[#73E3B4]/30">
+                              {conn.peerCode}
+                            </span>
+                          </div>
+                          <div className="text-[11px] mt-0.5 flex items-center gap-2">
+                            {isSettled ? (
+                              <span className="text-[#73E3B4] font-medium flex items-center gap-1">
+                                <Check className="w-3 h-3" />
+                                <span>Settled up</span>
+                              </span>
+                            ) : balance > 0 ? (
+                              <span className="text-[#73E3B4] font-mono font-semibold">
+                                +{formatTaka(balance)} (Owes you)
+                              </span>
+                            ) : (
+                              <span className="text-[#FFB4AB] font-mono font-semibold">
+                                -{formatTaka(Math.abs(balance))} (You owe)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenProposeForPeer(conn, 'loan')}
+                          className="px-3 py-1.5 rounded-lg bg-[#0C0E12] hover:bg-[#1E2024] text-[#73E3B4] border border-[#3D4943]/40 text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Send className="w-3 h-3" />
+                          <span>Propose Loan</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenProposeForPeer(conn, 'repay')}
+                          className="px-3 py-1.5 rounded-lg bg-[#0C0E12] hover:bg-[#1E2024] text-[#E2E2E8] border border-[#3D4943]/40 text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <ArrowRightLeft className="w-3 h-3 text-[#73E3B4]" />
+                          <span>Propose Repayment</span>
+                        </button>
+                        {peerPerson && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPerson(peerPerson)}
+                            className="p-1.5 rounded-lg text-[#87948C] hover:text-[#E2E2E8] hover:bg-[#282A2E] transition-colors cursor-pointer"
+                            title="View shared ledger details"
+                          >
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => onDeleteConnection?.(conn.id)}
+                          className="p-1.5 rounded-lg text-[#87948C] hover:text-[#FFB4AB] hover:bg-[#282A2E] transition-colors cursor-pointer"
+                          title="Disconnect connection"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
@@ -861,7 +1143,7 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
               <button
                 type="button"
                 onClick={() => setShowConnectModal(false)}
-                className="p-1 rounded text-[#87948C] hover:text-[#E2E2E8]"
+                className="p-1 rounded text-[#87948C] hover:text-[#E2E2E8] cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -873,24 +1155,36 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
               </div>
             )}
 
-            <form onSubmit={handleSendConnectionRequest} className="space-y-3 text-xs">
+            <form onSubmit={handleSendConnectionRequest} className="space-y-3.5 text-xs">
               <div>
                 <label className="block text-[11px] font-medium text-[#BCCAC1] uppercase tracking-wider mb-1">
-                  User's EcO Connection Code
+                  Friend's EcO Connection Code
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. ECO-4821"
+                  placeholder="e.g. ECO-XXXXXX"
                   value={connectCodeInput}
-                  onChange={(e) => setConnectCodeInput(e.target.value.toUpperCase())}
-                  className="w-full px-3 py-2 rounded-lg bg-[#0C0E12] border border-[#3D4943]/50 font-mono text-[#E2E2E8] outline-none focus:border-[#73E3B4]"
+                  onChange={(e) => handleCodeInputChange(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-[#0C0E12] border border-[#3D4943]/50 font-mono text-sm text-[#E2E2E8] outline-none focus:border-[#73E3B4]"
                   autoFocus
                 />
+                {isSearchingPeer && (
+                  <div className="text-[11px] text-[#87948C] mt-1 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-[#73E3B4] animate-ping" />
+                    <span>Searching EcO directory...</span>
+                  </div>
+                )}
+                {verifiedPeer && (
+                  <div className="text-[11px] text-[#73E3B4] mt-1 flex items-center gap-1.5 font-medium">
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Verified user: {verifiedPeer.displayName || verifiedPeer.code} {verifiedPeer.email ? `(${verifiedPeer.email})` : ''}</span>
+                  </div>
+                )}
               </div>
 
               <div>
                 <label className="block text-[11px] font-medium text-[#BCCAC1] uppercase tracking-wider mb-1">
-                  Display Name
+                  Display Name in Your Ledger
                 </label>
                 <input
                   type="text"
@@ -902,20 +1196,20 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
               </div>
 
               <div className="p-3 rounded-lg bg-[#0C0E12] border border-[#3D4943]/30 text-[11px] text-[#87948C] leading-relaxed">
-                EcO establishes a direct connection. You can propose shared transactions to each other, but your private financial details and account balances remain strictly private.
+                EcO establishes a direct mutual connection between both accounts. Whenever one user records a loan, repayment, or borrowing transaction, the other user reviews and confirms it. Your personal wallet balances and private transactions remain strictly private.
               </div>
 
               <div className="pt-2 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setShowConnectModal(false)}
-                  className="px-3.5 py-1.5 rounded-lg bg-[#282A2E] text-xs text-[#BCCAC1]"
+                  className="px-3.5 py-1.5 rounded-lg bg-[#282A2E] text-xs text-[#BCCAC1] cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-lg bg-[#55C79A] hover:bg-[#73E3B4] text-[#003826] font-semibold text-xs transition-colors"
+                  className="px-4 py-1.5 rounded-lg bg-[#55C79A] hover:bg-[#73E3B4] text-[#003826] font-semibold text-xs transition-colors cursor-pointer"
                 >
                   Connect User
                 </button>
@@ -939,12 +1233,12 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
             <div className="flex items-center justify-between border-b border-[#3D4943]/30 pb-3">
               <h3 className="text-sm font-semibold text-[#E2E2E8] flex items-center gap-2">
                 <Send className="w-4 h-4 text-[#73E3B4]" />
-                <span>Propose Transaction to {proposalPeer.peerName}</span>
+                <span>Propose with {proposalPeer.peerName}</span>
               </h3>
               <button
                 type="button"
                 onClick={() => setShowProposeModal(false)}
-                className="p-1 rounded text-[#87948C] hover:text-[#E2E2E8]"
+                className="p-1 rounded text-[#87948C] hover:text-[#E2E2E8] cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -956,7 +1250,41 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
               </div>
             )}
 
-            <form onSubmit={handleSubmitProposal} className="space-y-3 text-xs">
+            <form onSubmit={handleSubmitProposal} className="space-y-3.5 text-xs">
+              {/* Kind Toggle: Loan vs Repayment */}
+              <div>
+                <label className="block text-[11px] font-medium text-[#BCCAC1] uppercase tracking-wider mb-1">
+                  Transaction Purpose
+                </label>
+                <div className="grid grid-cols-2 gap-2 bg-[#0C0E12] p-1 rounded-lg border border-[#3D4943]/40">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProposalKind('loan');
+                      setProposalType('give');
+                    }}
+                    className={`py-1.5 rounded-md font-medium text-xs transition-colors cursor-pointer ${
+                      proposalKind === 'loan' ? 'bg-[#1E2024] text-[#73E3B4] shadow-sm' : 'text-[#87948C]'
+                    }`}
+                  >
+                    Lend / Borrow (Debt)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProposalKind('repay');
+                      setProposalType('give');
+                    }}
+                    className={`py-1.5 rounded-md font-medium text-xs transition-colors cursor-pointer ${
+                      proposalKind === 'repay' ? 'bg-[#1E2024] text-[#73E3B4] shadow-sm' : 'text-[#87948C]'
+                    }`}
+                  >
+                    Repayment (Settlement)
+                  </button>
+                </div>
+              </div>
+
+              {/* Direction from your perspective */}
               <div>
                 <label className="block text-[11px] font-medium text-[#BCCAC1] uppercase tracking-wider mb-1">
                   Direction (From Your Perspective)
@@ -965,24 +1293,24 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setProposalType('give')}
-                    className={`py-2 rounded-lg border text-xs font-medium transition-all ${
+                    className={`py-2 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
                       proposalType === 'give'
                         ? 'bg-[#1E2024] border-[#73E3B4] text-[#73E3B4]'
                         : 'bg-[#0C0E12] border-[#3D4943]/40 text-[#87948C]'
                     }`}
                   >
-                    I Lent / Gave Money
+                    {proposalKind === 'loan' ? 'I Lent Money (Give)' : `I Repaid ${proposalPeer.peerName}`}
                   </button>
                   <button
                     type="button"
                     onClick={() => setProposalType('take')}
-                    className={`py-2 rounded-lg border text-xs font-medium transition-all ${
+                    className={`py-2 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
                       proposalType === 'take'
                         ? 'bg-[#1E2024] border-[#FFB4AB] text-[#FFB4AB]'
                         : 'bg-[#0C0E12] border-[#3D4943]/40 text-[#87948C]'
                     }`}
                   >
-                    I Received / Borrowed
+                    {proposalKind === 'loan' ? 'I Borrowed (Take)' : `${proposalPeer.peerName} Repaid Me`}
                   </button>
                 </div>
               </div>
@@ -1004,6 +1332,23 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
 
               <div>
                 <label className="block text-[11px] font-medium text-[#BCCAC1] uppercase tracking-wider mb-1">
+                  Your Account / Wallet
+                </label>
+                <select
+                  value={selectedWalletForPropose}
+                  onChange={(e) => setSelectedWalletForPropose(e.target.value)}
+                  className="w-full bg-[#0C0E12] border border-[#3D4943]/50 rounded-lg px-3 py-2 text-xs text-[#E2E2E8] outline-none focus:border-[#73E3B4]"
+                >
+                  {paymentMethods.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({formatTaka(m.balance || 0)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-[#BCCAC1] uppercase tracking-wider mb-1">
                   Date
                 </label>
                 <input
@@ -1020,7 +1365,7 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. Lunch split, ticket reimbursement..."
+                  placeholder="e.g. Lunch split, emergency loan, partial repayment..."
                   value={proposalNote}
                   onChange={(e) => setProposalNote(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg bg-[#0C0E12] border border-[#3D4943]/50 text-xs text-[#E2E2E8] outline-none focus:border-[#73E3B4]"
@@ -1031,15 +1376,89 @@ export const PeopleView: React.FC<PeopleViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowProposeModal(false)}
-                  className="px-3.5 py-1.5 rounded-lg bg-[#282A2E] text-xs text-[#BCCAC1]"
+                  className="px-3.5 py-1.5 rounded-lg bg-[#282A2E] text-xs text-[#BCCAC1] cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-lg bg-[#55C79A] hover:bg-[#73E3B4] text-[#003826] font-semibold text-xs"
+                  className="px-4 py-1.5 rounded-lg bg-[#55C79A] hover:bg-[#73E3B4] text-[#003826] font-semibold text-xs transition-colors cursor-pointer"
                 >
                   Send Proposal
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- Dispute Proposal Modal --- */}
+      {disputingProposal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-150"
+          onClick={() => setDisputingProposal(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="w-full max-w-md bg-[#1A1C20] border border-[#FFB4AB]/40 rounded-xl p-5 shadow-2xl space-y-4 text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[#3D4943]/30 pb-3">
+              <h3 className="text-sm font-semibold text-[#FFB4AB] flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-[#FFB4AB]" />
+                <span>Dispute Transaction Proposal</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setDisputingProposal(null)}
+                className="p-1 rounded text-[#87948C] hover:text-[#E2E2E8] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-[#BCCAC1] leading-relaxed">
+              If the proposed amount or details don't match what actually happened, flag this dispute.
+              The proposal will be preserved without altering your confirmed balances.
+            </p>
+
+            <div className="p-3 rounded-lg bg-[#0C0E12] border border-[#3D4943]/30">
+              <div className="text-[11px] text-[#87948C]">Disputing proposal from {disputingProposal.senderName}:</div>
+              <div className="text-sm font-mono font-bold text-[#E2E2E8] mt-0.5">
+                {formatTaka(disputingProposal.amount)}
+              </div>
+            </div>
+
+            <form onSubmit={handleSubmitDispute} className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-medium text-[#BCCAC1] uppercase tracking-wider mb-1">
+                  Reason for Dispute
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Received ৳800, not ৳1000, or already repaid in cash"
+                  value={disputeReasonInput}
+                  onChange={(e) => setDisputeReasonInput(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-[#0C0E12] border border-[#3D4943]/50 text-xs text-[#E2E2E8] outline-none focus:border-[#FFB4AB]"
+                  autoFocus
+                  required
+                />
+              </div>
+
+              <div className="pt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDisputingProposal(null)}
+                  className="px-3.5 py-1.5 rounded-lg bg-[#282A2E] text-xs text-[#BCCAC1] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 rounded-lg bg-[#FFB4AB] hover:bg-[#FF897A] text-[#690005] font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  Flag Dispute
                 </button>
               </div>
             </form>
