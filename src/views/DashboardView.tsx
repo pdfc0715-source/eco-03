@@ -348,12 +348,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </div>
                   </div>
 
+                  {/* Fixed & Emergency Quick Progress Strip */}
+                  {budgetMetrics.mode === 'calculated' && (
+                    <div className="grid grid-cols-2 gap-2 p-2.5 rounded-lg bg-[#0C0E12] border border-[#3D4943]/40 text-[11px]">
+                      <div className="flex flex-col">
+                        <div className="flex items-center justify-between text-[#87948C] text-[10px]">
+                          <span>Fixed Cost Completed:</span>
+                          <span className={`font-mono font-semibold ${budgetMetrics.isFixedOver ? 'text-[#FFB4AB]' : 'text-[#73E3B4]'}`}>
+                            {budgetMetrics.plannedFixed > 0 ? Math.min(100, Math.round((budgetMetrics.actualFixed / budgetMetrics.plannedFixed) * 100)) : 0}%
+                          </span>
+                        </div>
+                        <div className="font-mono text-xs text-[#E2E2E8] font-medium mt-0.5">
+                          {formatTaka(budgetMetrics.actualFixed)} <span className="text-[#87948C] text-[10px]">/ {formatTaka(budgetMetrics.plannedFixed)}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col border-l border-[#3D4943]/30 pl-2.5">
+                        <div className="flex items-center justify-between text-[#87948C] text-[10px]">
+                          <span>Emergency Fund Used:</span>
+                          <span className={`font-mono font-semibold ${budgetMetrics.isEmergencyOver ? 'text-[#FFB4AB]' : 'text-[#73E3B4]'}`}>
+                            {budgetMetrics.plannedEmergency > 0 ? Math.min(100, Math.round((budgetMetrics.actualEmergency / budgetMetrics.plannedEmergency) * 100)) : 0}%
+                          </span>
+                        </div>
+                        <div className="font-mono text-xs text-[#E2E2E8] font-medium mt-0.5">
+                          {formatTaka(budgetMetrics.actualEmergency)} <span className="text-[#87948C] text-[10px]">/ {formatTaka(budgetMetrics.plannedEmergency)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                 </div>
               )}
             </div>
 
             {/* Action buttons: Customize DB & Details */}
-            <div className="mt-4 pt-3 border-t border-[#3D4943]/20 flex items-center justify-between gap-2">
+            <div className="mt-4 pt-3 border-t border-[#3D4943]/20 flex flex-wrap items-center justify-between gap-2">
               {onNavigateToSettings ? (
                 <button
                   type="button"
@@ -372,11 +401,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowBudgetDetailsModal(true)}
-                  className="btn-sm bg-[#1E2024] hover:bg-[#282A2E] text-[#73E3B4] border border-[#73E3B4]/40 gap-1.5 cursor-pointer text-xs font-medium"
-                  title="View Fixed & Emergency spending vs plan"
+                  className="btn-sm px-3 py-1.5 bg-[#1E2024] hover:bg-[#282A2E] text-[#73E3B4] border border-[#73E3B4]/40 gap-2 cursor-pointer text-xs font-medium flex items-center transition-colors shadow-sm"
+                  title="View Fixed & Emergency spending progress and today's formula calculation"
                 >
-                  <Sparkles className="w-3 h-3" />
+                  <Sparkles className="w-3.5 h-3.5 text-[#73E3B4]" />
                   <span>Details</span>
+                  <span className="flex items-center gap-1.5 text-[10px] text-[#BCCAC1] font-mono border-l border-[#3D4943]/50 pl-2">
+                    <span>Fixed: <strong className={budgetMetrics.isFixedOver ? 'text-[#FFB4AB]' : 'text-[#73E3B4]'}>{budgetMetrics.plannedFixed > 0 ? Math.min(100, Math.round((budgetMetrics.actualFixed / budgetMetrics.plannedFixed) * 100)) : 0}%</strong></span>
+                    <span className="text-[#87948C]">•</span>
+                    <span>Emer: <strong className={budgetMetrics.isEmergencyOver ? 'text-[#FFB4AB]' : 'text-[#73E3B4]'}>{budgetMetrics.plannedEmergency > 0 ? Math.min(100, Math.round((budgetMetrics.actualEmergency / budgetMetrics.plannedEmergency) * 100)) : 0}%</strong></span>
+                  </span>
                 </button>
               )}
             </div>
