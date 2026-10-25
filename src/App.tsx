@@ -102,6 +102,16 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3000);
   }, []);
 
+  // Handle invitation link ?connect=ECO-XXXXXX
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connectCode = params.get('connect');
+    if (connectCode) {
+      setCurrentTab('people');
+      showToast(`EcO invite code detected: ${connectCode.toUpperCase()}`);
+    }
+  }, [showToast]);
+
   // Synchronize dark/light theme and color palette on document root
   useEffect(() => {
     const isLight = settings.theme === 'light';
@@ -708,51 +718,53 @@ export default function App() {
                 setIsAddModalOpen(true);
               }}
               onGenerateShareLink={handleGenerateShareLink}
-              onCreateConnection={(code, peerName) => {
-                const newConn: EcOConnection = {
-                  id: `conn_${Date.now()}`,
-                  peerUserId: code,
-                  peerName,
-                  peerCode: code,
-                  status: 'connected',
-                  createdAt: Date.now(),
-                  updatedAt: Date.now()
-                };
-                repository.saveConnection(newConn);
-                showToast(`Connected with ${peerName} (${code}).`);
+              onCreateConnection={async (code, peerName) => {
+                const res = await repository.requestConnection(code, peerName);
+                if (res.success) {
+                  showToast(`Connected with ${res.connection?.peerName || peerName} (${code}).`);
+                } else {
+                  showToast(res.error || 'Could not connect.');
+                }
               }}
-              onDeleteConnection={(connId) => {
-                repository.deleteConnection(connId);
+              onDeleteConnection={async (connId) => {
+                await repository.deleteConnection(connId);
                 showToast('Connection removed.');
               }}
-              onCreateProposal={(recipientCode, recipientName, type, amount, date, note) => {
-                const newProp: EcOProposal = {
-                  id: `prop_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                  senderUserId: myConnectionCode,
-                  senderName: 'Me',
-                  recipientUserId: recipientCode,
+              onCreateProposal={async (recipientCode, recipientName, type, amount, date, note, isRepayment, payMethodId) => {
+                const res = await repository.createProposal({
+                  recipientCode,
                   recipientName,
-                  originalSenderType: type,
-                  recipientPerspectiveType: invertProposalDirection(type),
+                  type,
                   amount,
                   date,
                   note,
-                  status: 'pending',
-                  createdAt: Date.now()
-                };
-                repository.addProposal(newProp);
-                showToast(`Proposal of ৳${amount} sent to ${recipientName}.`);
-              }}
-              onAcceptProposal={(proposalId, payMethodId) => {
-                const res = repository.acceptProposal(proposalId, payMethodId);
+                  isRepayment,
+                  payMethodId
+                });
                 if (res.success) {
-                  showToast('Proposal accepted & posted to your ledger!');
+                  showToast(`${isRepayment ? 'Repayment proposal' : 'Transaction proposal'} of ৳${amount} sent to ${recipientName}.`);
+                } else {
+                  showToast(res.error || 'Could not create proposal.');
+                }
+              }}
+              onAcceptProposal={async (proposalId, payMethodId) => {
+                const res = await repository.acceptProposal(proposalId, payMethodId);
+                if (res.success) {
+                  showToast('Proposal confirmed & posted to your shared ledger!');
                 } else {
                   showToast(res.error || 'Failed to accept proposal.');
                 }
               }}
-              onRejectProposal={(proposalId) => {
-                repository.rejectProposal(proposalId);
+              onDisputeProposal={async (proposalId, reason) => {
+                const res = await repository.disputeProposal(proposalId, reason);
+                if (res.success) {
+                  showToast('Proposal marked as disputed. No changes were made to confirmed balances.');
+                } else {
+                  showToast(res.error || 'Failed to dispute proposal.');
+                }
+              }}
+              onRejectProposal={async (proposalId) => {
+                await repository.rejectProposal(proposalId);
                 showToast('Proposal rejected.');
               }}
             />
