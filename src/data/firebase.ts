@@ -45,12 +45,12 @@ import {
 // FIREBASE CONFIGURATION (REPLACE '***' WITH YOUR FIREBASE PROJECT DETAILS)
 // ============================================================================
 export const firebaseConfig = {
-  apiKey: "***",
-  authDomain: "***.firebaseapp.com",
-  projectId: "***",
-  storageBucket: "***.appspot.com",
-  messagingSenderId: "***",
-  appId: "***"
+  apiKey: "AIzaSyA5FC1nw5OCkLNIBkNBqlOzeW6JY4Nn0dc",
+  authDomain: "eco2026-a4b2f.firebaseapp.com",
+  projectId: "eco2026-a4b2f",
+  storageBucket: "eco2026-a4b2f.firebasestorage.app",
+  messagingSenderId: "541806262848",
+  appId: "1:541806262848:web:388d09d0e6ae7f18f8fda5"
 };
 
 /**
