@@ -346,7 +346,7 @@ export const Navigation: React.FC<NavigationProps> = ({
       )}
 
       {/* --- Mobile Bottom Tab Bar (Fixed) --- */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 h-16 bg-[#0C0E12]/95 backdrop-blur-md border-t border-[#3D4943]/40 z-30 flex items-center justify-around px-1">
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 h-16 bg-[#0C0E12]/95 backdrop-blur-md border-t border-[#3D4943]/40 z-30 flex items-center justify-around px-2">
         <button
           type="button"
           onClick={() => onSelectTab('dashboard')}
@@ -403,17 +403,6 @@ export const Navigation: React.FC<NavigationProps> = ({
         >
           <Users2 className="w-4 h-4 mb-0.5" />
           <span className="text-[10px] font-medium truncate">People</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => onSelectTab('stats')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 transition-colors min-h-[44px] cursor-pointer ${
-            currentTab === 'stats' ? 'text-[#73E3B4]' : 'text-[#87948C]'
-          }`}
-        >
-          <BarChart3 className="w-4 h-4 mb-0.5" />
-          <span className="text-[10px] font-medium truncate">Stats</span>
         </button>
       </nav>
 
