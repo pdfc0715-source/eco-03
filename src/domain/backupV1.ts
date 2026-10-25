@@ -351,13 +351,19 @@ export function migrateBackupV1ToDomain(backup: EcoBackupV1): {
   // 3. People
   const people: PersonRecord[] = (data.people || []).map((p) => {
     const f = restoreTaggedValues(p.fields || {});
-    return {
+    const personRecord: PersonRecord = {
       id: p.id,
       name: f.name || 'Unnamed Person',
-      phone: f.phone,
       isConnected: false,
       createdAt: f.createdAt || now
     };
+    if (f.phone) {
+      personRecord.phone = String(f.phone).trim();
+    }
+    if (f.connectionCode) {
+      personRecord.connectionCode = String(f.connectionCode).trim();
+    }
+    return personRecord;
   });
 
   // 4. Expenses
