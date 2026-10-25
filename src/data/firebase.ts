@@ -30,6 +30,7 @@ import {
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
   Firestore,
   doc,
   setDoc,
@@ -45,12 +46,12 @@ import {
 // FIREBASE CONFIGURATION (REPLACE '***' WITH YOUR FIREBASE PROJECT DETAILS)
 // ============================================================================
 export const firebaseConfig = {
-  apiKey: "AIzaSyA5FC1nw5OCkLNIBkNBqlOzeW6JY4Nn0dc",
-  authDomain: "eco2026-a4b2f.firebaseapp.com",
-  projectId: "eco2026-a4b2f",
-  storageBucket: "eco2026-a4b2f.firebasestorage.app",
-  messagingSenderId: "541806262848",
-  appId: "1:541806262848:web:388d09d0e6ae7f18f8fda5"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyA5FC1nw5OCkLNIBkNBqlOzeW6JY4Nn0dc",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "eco2026-a4b2f.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "eco2026-a4b2f",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "eco2026-a4b2f.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "541806262848",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:541806262848:web:388d09d0e6ae7f18f8fda5"
 };
 
 /**
@@ -80,10 +81,47 @@ if (isFirebaseConfigured()) {
       app = getApps()[0];
     }
     auth = getAuth(app);
-    db = getFirestore(app);
+    try {
+      db = initializeFirestore(app, {
+        ignoreUndefinedProperties: true
+      });
+    } catch {
+      db = getFirestore(app);
+    }
   } catch (err) {
     console.warn('[EcO Firebase] Initialization warning:', err);
   }
+}
+
+/**
+ * Recursively removes all keys with `undefined` values from an object,
+ * ensuring it is 100% compliant with Cloud Firestore's data model.
+ */
+export function sanitizeForFirestore<T>(data: T): T {
+  if (data === null || data === undefined) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return data
+      .filter((item) => item !== undefined)
+      .map((item) => sanitizeForFirestore(item)) as unknown as T;
+  }
+  if (typeof data === 'object') {
+    if (data instanceof Date) return data;
+    const proto = Object.getPrototypeOf(data);
+    if (proto && proto.constructor && proto.constructor.name !== 'Object') {
+      return data;
+    }
+
+    const clean: Record<string, any> = {};
+    for (const [key, value] of Object.entries(data as Record<string, any>)) {
+      if (value !== undefined) {
+        clean[key] = typeof value === 'object' && value !== null ? sanitizeForFirestore(value) : value;
+      }
+    }
+    return clean as T;
+  }
+  return data;
 }
 
 export { app, auth, db };
