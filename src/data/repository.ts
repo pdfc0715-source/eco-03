@@ -16,7 +16,12 @@ import {
 import { createDefaultPaymentMethods } from '../domain/paymentMethods';
 import { SEVEN_DAYS_MS } from '../domain/dates';
 import { EcoBackupV1, migrateBackupV1ToDomain } from '../domain/backupV1';
-import { invertProposalDirection, generateDefaultConnectionCode } from '../domain/connections';
+import {
+  invertProposalDirection,
+  generateDefaultConnectionCode,
+  formatConnectionCode,
+  validateConnectionCode
+} from '../domain/connections';
 import { db, isFirebaseConfigured, handleFirestoreError, OperationType, sanitizeForFirestore } from './firebase';
 import {
   doc,
@@ -27,13 +32,17 @@ import {
   getDocs,
   onSnapshot,
   Unsubscribe,
-  writeBatch
+  writeBatch,
+  query,
+  where
 } from 'firebase/firestore';
 
 export class HybridFirebaseRepository {
   private listeners: Set<() => void> = new Set();
   private unsubs: Unsubscribe[] = [];
   private activeUserId: string | null = null;
+  private userDisplayName: string = 'EcO User';
+  private userEmail: string = '';
 
   // In-memory user data cache
   private settings: UserSettings | null = null;
@@ -53,7 +62,20 @@ export class HybridFirebaseRepository {
   private firstLaunchDone: boolean = false;
 
   constructor() {
-    // Empty initial state
+    if (typeof window !== 'undefined') {
+      window.addEventListener('storage', (e) => {
+        if (
+          e.key?.startsWith('eco_shared_proposals') ||
+          e.key?.startsWith('eco_shared_connections') ||
+          e.key?.startsWith('eco_code_registry') ||
+          e.key?.includes('proposals') ||
+          e.key?.includes('connections')
+        ) {
+          this.loadFromLocalStorageCache();
+          this.notify();
+        }
+      });
+    }
   }
 
   subscribe(callback: () => void): () => void {
@@ -89,9 +111,35 @@ export class HybridFirebaseRepository {
     this.unsubs.forEach((unsub) => unsub());
     this.unsubs = [];
     this.activeUserId = userId;
+    this.userDisplayName = userDisplayName || 'EcO User';
+    this.userEmail = userEmail || '';
 
     // 1. Load from local cache for instant zero-latency render
     this.loadFromLocalStorageCache();
+
+    // Determine or generate unique Connection Code for this user
+    let userCode = localStorage.getItem(this.getStorageKey('connectionCode'));
+    if (!userCode || userCode === 'ECO-USER') {
+      userCode = generateDefaultConnectionCode(userId);
+      this.myConnectionCode = userCode;
+      localStorage.setItem(this.getStorageKey('connectionCode'), userCode);
+    } else {
+      this.myConnectionCode = userCode;
+    }
+
+    // Save in public code registry for local offline & cross-tab testing
+    try {
+      localStorage.setItem(
+        `eco_code_registry_${this.myConnectionCode}`,
+        JSON.stringify({
+          code: this.myConnectionCode,
+          userId: userId,
+          displayName: this.userDisplayName,
+          email: this.userEmail,
+          updatedAt: Date.now()
+        })
+      );
+    } catch {}
 
     // 2. If Firebase is active and configured, subscribe to Firestore real-time subcollections
     if (isFirebaseConfigured() && db) {
@@ -122,8 +170,9 @@ export class HybridFirebaseRepository {
           await this.setDocSafe(userRef, {
             ...initialSettings,
             uid: userId,
-            displayName: userDisplayName || 'EcO User',
-            email: userEmail || '',
+            displayName: this.userDisplayName,
+            email: this.userEmail,
+            connectionCode: this.myConnectionCode,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           });
@@ -148,6 +197,26 @@ export class HybridFirebaseRepository {
         } else {
           const data = userSnap.data();
           this.firstLaunchDone = Boolean(data?.setupComplete);
+          if (data?.connectionCode && data.connectionCode !== 'ECO-USER') {
+            this.myConnectionCode = data.connectionCode;
+            localStorage.setItem(this.getStorageKey('connectionCode'), this.myConnectionCode);
+          } else {
+            // Persist the generated connectionCode
+            await this.setDocSafe(userRef, { connectionCode: this.myConnectionCode }, { merge: true });
+          }
+        }
+
+        // Register connectionCode in public lookup collection
+        try {
+          await this.setDocSafe(doc(db, 'connectionCodes', this.myConnectionCode), {
+            code: this.myConnectionCode,
+            userId: userId,
+            displayName: this.userDisplayName,
+            email: this.userEmail,
+            updatedAt: Date.now()
+          }, { merge: true });
+        } catch (codeRegErr) {
+          console.warn('[EcO Firestore] Could not register connectionCode in directory:', codeRegErr);
         }
 
         // Attach real-time subcollection listeners
@@ -168,6 +237,9 @@ export class HybridFirebaseRepository {
     this.unsubs.forEach((u) => u());
     this.unsubs = [];
     this.activeUserId = null;
+    this.userDisplayName = 'EcO User';
+    this.userEmail = '';
+    this.myConnectionCode = 'ECO-USER';
     this.settings = null;
     this.paymentMethods = [];
     this.expenses = [];
@@ -251,6 +323,116 @@ export class HybridFirebaseRepository {
         )
       );
     });
+
+    // 3. Shared EcO Connections listener
+    try {
+      const connQuery = query(
+        collection(firestoreDb, 'connections'),
+        where('participants', 'array-contains', userId)
+      );
+      this.unsubs.push(
+        onSnapshot(
+          connQuery,
+          (snapshot) => {
+            const items = snapshot.docs.map((d) => d.data()) as EcOConnection[];
+            this.connections = items.map((c) => {
+              if (c.userAId === userId) {
+                return {
+                  ...c,
+                  peerUserId: c.userBId || c.peerUserId,
+                  peerName: c.userBName || c.peerName,
+                  peerCode: c.userBCode || c.peerCode
+                };
+              } else {
+                return {
+                  ...c,
+                  peerUserId: c.userAId || c.peerUserId,
+                  peerName: c.userAName || c.peerName,
+                  peerCode: c.userACode || c.peerCode
+                };
+              }
+            });
+            this.saveToLocalStorageCache('connections', this.connections);
+            this.notify();
+          },
+          (err) => console.warn('[EcO Firestore] Connections sync listener warning:', err)
+        )
+      );
+    } catch (e) {
+      console.warn('Failed to attach connections query listener:', e);
+    }
+
+    // 4. Shared Proposals listener
+    try {
+      const propQuery = query(
+        collection(firestoreDb, 'proposals'),
+        where('participants', 'array-contains', userId)
+      );
+      this.unsubs.push(
+        onSnapshot(
+          propQuery,
+          async (snapshot) => {
+            const items = snapshot.docs.map((d) => d.data()) as EcOProposal[];
+            this.proposals = items;
+            this.saveToLocalStorageCache('proposals', items);
+
+            // Real-time synchronization:
+            // When sender's client observes that an outgoing proposal transitioned to 'accepted',
+            // if sender doesn't have the confirmed transaction in ledger yet, record it!
+            for (const p of items) {
+              if (p.status === 'accepted' && p.senderUserId === userId) {
+                const alreadyRecorded = this.transactions.some(
+                  (t) => t.id === `tx_prop_${p.id}_sender` || t.proposalId === p.id
+                );
+                if (!alreadyRecorded) {
+                  let senderPerson = this.people.find(
+                    (pe) =>
+                      (p.recipientCode && pe.connectionCode === p.recipientCode) ||
+                      (p.recipientUserId && pe.connectedUserId === p.recipientUserId) ||
+                      pe.name.toLowerCase() === p.recipientName.toLowerCase()
+                  );
+                  if (!senderPerson) {
+                    senderPerson = {
+                      id: `person_peer_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+                      name: p.recipientName,
+                      isConnected: true,
+                      connectionCode: p.recipientCode,
+                      connectedUserId: p.recipientUserId,
+                      createdAt: new Date().toISOString()
+                    };
+                    await this.addPerson(senderPerson);
+                  }
+                  const senderTx: PeerTransactionRecord = {
+                    id: `tx_prop_${p.id}_sender`,
+                    personId: senderPerson.id,
+                    type: p.originalSenderType,
+                    amount: p.amount,
+                    totalAmount: p.amount,
+                    payMethodId: p.payMethodId || this.paymentMethods[0]?.id || 'cash',
+                    tag: p.isRepayment ? 'Repayment' : 'Shared Debt',
+                    description: p.note
+                      ? `${p.note} (Confirmed)`
+                      : p.isRepayment
+                      ? `Repayment confirmed with ${p.recipientName}`
+                      : `Shared loan with ${p.recipientName}`,
+                    date: p.date,
+                    timestamp: p.updatedAt || Date.now(),
+                    status: 'accepted',
+                    proposalId: p.id
+                  };
+                  await this.addTransaction(senderTx);
+                }
+              }
+            }
+
+            this.notify();
+          },
+          (err) => console.warn('[EcO Firestore] Proposals sync listener warning:', err)
+        )
+      );
+    } catch (e) {
+      console.warn('Failed to attach proposals query listener:', e);
+    }
   }
 
   private loadFromLocalStorageCache() {
@@ -310,6 +492,17 @@ export class HybridFirebaseRepository {
 
       const rawNotifications = localStorage.getItem(this.getStorageKey('notifications'));
       this.notifications = rawNotifications ? JSON.parse(rawNotifications) : [];
+
+      const rawConnections = localStorage.getItem(this.getStorageKey('connections'));
+      this.connections = rawConnections ? JSON.parse(rawConnections) : [];
+
+      const rawProposals = localStorage.getItem(this.getStorageKey('proposals'));
+      this.proposals = rawProposals ? JSON.parse(rawProposals) : [];
+
+      const rawCode = localStorage.getItem(this.getStorageKey('connectionCode'));
+      if (rawCode && rawCode !== 'ECO-USER') {
+        this.myConnectionCode = rawCode;
+      }
 
       const rawSetup = localStorage.getItem(this.getStorageKey('setupComplete'));
       this.firstLaunchDone = rawSetup === 'true';
@@ -747,57 +940,321 @@ export class HybridFirebaseRepository {
     return this.myConnectionCode;
   }
 
-  saveConnection(conn: EcOConnection): void {
+  async lookupConnectionCode(rawCode: string): Promise<{ code: string; userId: string; displayName?: string; email?: string } | null> {
+    const code = formatConnectionCode(rawCode);
+    if (!code) return null;
+
+    if (isFirebaseConfigured() && db) {
+      try {
+        const snap = await getDoc(doc(db, 'connectionCodes', code));
+        if (snap.exists()) {
+          return snap.data() as any;
+        }
+      } catch (err) {
+        console.warn('Firestore code lookup warning:', err);
+      }
+    }
+
+    try {
+      const raw = localStorage.getItem(`eco_code_registry_${code}`);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+
+    return null;
+  }
+
+  async requestConnection(
+    rawCode: string,
+    customPeerName?: string
+  ): Promise<{ success: boolean; connection?: EcOConnection; error?: string }> {
+    const code = formatConnectionCode(rawCode);
+    if (!validateConnectionCode(code)) {
+      return { success: false, error: 'Invalid connection code format. Format: ECO-XXXXXX' };
+    }
+    if (code === this.myConnectionCode) {
+      return { success: false, error: 'You cannot connect to your own EcO Connection Code.' };
+    }
+
+    const existing = this.connections.find((c) => c.peerCode === code);
+    if (existing) {
+      return { success: false, error: `You are already connected with ${existing.peerName} (${code}).` };
+    }
+
+    const found = await this.lookupConnectionCode(code);
+    const peerUserId = found?.userId || `user_${code.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+    const peerName = customPeerName?.trim() || found?.displayName || `EcO Friend (${code})`;
+
+    const connId = `conn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const newConn: EcOConnection = {
+      id: connId,
+      participants: [this.activeUserId || 'local_user', peerUserId],
+      userAId: this.activeUserId || 'local_user',
+      userAName: this.userDisplayName,
+      userACode: this.myConnectionCode,
+      userBId: peerUserId,
+      userBName: peerName,
+      userBCode: code,
+      peerUserId: peerUserId,
+      peerName: peerName,
+      peerCode: code,
+      status: 'connected',
+      initiatedBy: this.activeUserId || 'local_user',
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+
+    await this.saveConnection(newConn);
+
+    // Automatically ensure PersonRecord exists in local People ledger
+    let person = this.people.find(
+      (p) =>
+        (code && p.connectionCode === code) ||
+        (peerUserId && p.connectedUserId === peerUserId) ||
+        p.name.toLowerCase() === peerName.toLowerCase()
+    );
+    if (!person) {
+      person = {
+        id: `person_conn_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+        name: peerName,
+        isConnected: true,
+        connectionCode: code,
+        connectedUserId: peerUserId,
+        createdAt: new Date().toISOString()
+      };
+      await this.addPerson(person);
+    } else if (!person.isConnected || person.connectionCode !== code) {
+      await this.updatePerson({
+        ...person,
+        isConnected: true,
+        connectionCode: code,
+        connectedUserId: peerUserId
+      });
+    }
+
+    return { success: true, connection: newConn };
+  }
+
+  async saveConnection(conn: EcOConnection): Promise<void> {
     this.connections = [...this.connections.filter((c) => c.id !== conn.id), conn];
     this.saveToLocalStorageCache('connections', this.connections);
+
+    try {
+      localStorage.setItem(`eco_shared_connections_${conn.id}`, JSON.stringify(conn));
+    } catch {}
+
+    if (isFirebaseConfigured() && db) {
+      try {
+        await this.setDocSafe(doc(db, 'connections', conn.id), conn);
+      } catch (err) {
+        console.warn('Firestore connection write error:', err);
+      }
+    }
     this.notify();
   }
 
-  deleteConnection(connId: string): void {
+  async deleteConnection(connId: string): Promise<void> {
+    const conn = this.connections.find((c) => c.id === connId);
     this.connections = this.connections.filter((c) => c.id !== connId);
     this.saveToLocalStorageCache('connections', this.connections);
+
+    if (conn) {
+      try {
+        localStorage.removeItem(`eco_shared_connections_${connId}`);
+      } catch {}
+      const person = this.people.find((p) => p.connectionCode === conn.peerCode);
+      if (person) {
+        await this.updatePerson({ ...person, isConnected: false });
+      }
+    }
+
+    if (isFirebaseConfigured() && db) {
+      try {
+        await deleteDoc(doc(db, 'connections', connId));
+      } catch (err) {
+        console.warn('Firestore connection delete error:', err);
+      }
+    }
     this.notify();
   }
 
-  addProposal(proposal: EcOProposal): void {
-    this.proposals = [proposal, ...this.proposals];
+  async createProposal(params: {
+    recipientCode: string;
+    recipientName: string;
+    type: 'give' | 'take';
+    amount: number;
+    date: string;
+    note?: string;
+    payMethodId?: string;
+    isRepayment?: boolean;
+  }): Promise<{ success: boolean; proposal?: EcOProposal; error?: string }> {
+    if (params.amount <= 0) {
+      return { success: false, error: 'Proposal amount must be greater than 0.' };
+    }
+    const code = formatConnectionCode(params.recipientCode);
+    const conn = this.connections.find((c) => c.peerCode === code);
+    const recipientUserId = conn?.peerUserId || code;
+
+    const propId = `prop_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const proposal: EcOProposal = {
+      id: propId,
+      participants: [this.activeUserId || 'local_user', recipientUserId],
+      connectionId: conn?.id,
+      senderUserId: this.activeUserId || 'local_user',
+      senderName: this.userDisplayName,
+      senderCode: this.myConnectionCode,
+      recipientUserId: recipientUserId,
+      recipientName: params.recipientName,
+      recipientCode: code,
+      originalSenderType: params.type,
+      recipientPerspectiveType: invertProposalDirection(params.type),
+      amount: params.amount,
+      isRepayment: Boolean(params.isRepayment),
+      date: params.date,
+      note: params.note || '',
+      payMethodId: params.payMethodId || this.paymentMethods[0]?.id || 'cash',
+      status: 'pending',
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+
+    await this.addProposal(proposal);
+    return { success: true, proposal };
+  }
+
+  async addProposal(proposal: EcOProposal): Promise<void> {
+    this.proposals = [proposal, ...this.proposals.filter((p) => p.id !== proposal.id)];
     this.saveToLocalStorageCache('proposals', this.proposals);
+
+    try {
+      localStorage.setItem(`eco_shared_proposals_${proposal.id}`, JSON.stringify(proposal));
+    } catch {}
+
+    if (isFirebaseConfigured() && db) {
+      try {
+        await this.setDocSafe(doc(db, 'proposals', proposal.id), proposal);
+      } catch (err) {
+        console.warn('Firestore proposal write error:', err);
+      }
+    }
     this.notify();
   }
 
-  acceptProposal(proposalId: string, payMethodId: string): { success: boolean; error?: string } {
+  async updateProposal(proposal: EcOProposal): Promise<void> {
+    this.proposals = this.proposals.map((p) => (p.id === proposal.id ? proposal : p));
+    this.saveToLocalStorageCache('proposals', this.proposals);
+
+    try {
+      localStorage.setItem(`eco_shared_proposals_${proposal.id}`, JSON.stringify(proposal));
+    } catch {}
+
+    if (isFirebaseConfigured() && db) {
+      try {
+        await this.setDocSafe(doc(db, 'proposals', proposal.id), proposal, { merge: true });
+      } catch (err) {
+        console.warn('Firestore proposal update error:', err);
+      }
+    }
+    this.notify();
+  }
+
+  async acceptProposal(proposalId: string, payMethodId: string): Promise<{ success: boolean; error?: string }> {
     const prop = this.proposals.find((p) => p.id === proposalId);
     if (!prop) return { success: false, error: 'Proposal not found' };
+    if (prop.status !== 'pending' && prop.status !== 'disputed') {
+      return { success: false, error: `Proposal already ${prop.status}` };
+    }
+
+    const updatedProp: EcOProposal = {
+      ...prop,
+      status: 'accepted',
+      updatedAt: Date.now()
+    };
+
+    // The other peer from current user's perspective
+    const isRecipient = prop.senderUserId !== this.activeUserId;
+    const peerName = isRecipient ? prop.senderName : prop.recipientName;
+    const peerCode = isRecipient ? prop.senderCode : prop.recipientCode;
+    const peerUid = isRecipient ? prop.senderUserId : prop.recipientUserId;
+
+    let person = this.people.find(
+      (p) =>
+        (peerCode && p.connectionCode === peerCode) ||
+        (peerUid && p.connectedUserId === peerUid) ||
+        p.name.toLowerCase() === peerName.toLowerCase()
+    );
+
+    if (!person) {
+      person = {
+        id: `person_peer_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+        name: peerName,
+        isConnected: true,
+        connectionCode: peerCode,
+        connectedUserId: peerUid,
+        createdAt: new Date().toISOString()
+      };
+      await this.addPerson(person);
+    } else if (!person.isConnected) {
+      await this.updatePerson({
+        ...person,
+        isConnected: true,
+        connectionCode: peerCode || person.connectionCode,
+        connectedUserId: peerUid || person.connectedUserId
+      });
+    }
+
+    // Direction: recipientPerspectiveType if accepting received proposal; originalSenderType if self-accepting
+    const txType = isRecipient ? prop.recipientPerspectiveType : prop.originalSenderType;
+
+    const txDesc = prop.note
+      ? `${prop.note} (via EcO Proposal)`
+      : prop.isRepayment
+      ? `Repayment confirmed with ${peerName}`
+      : `Shared loan with ${peerName}`;
 
     const newTx: PeerTransactionRecord = {
-      id: `tx_${Date.now()}`,
-      personId: prop.recipientUserId || 'unknown',
-      type: prop.recipientPerspectiveType || 'give',
+      id: `tx_prop_${prop.id}_${isRecipient ? 'rec' : 'sender'}`,
+      personId: person.id,
+      type: txType,
       amount: prop.amount,
       totalAmount: prop.amount,
-      payMethodId: payMethodId,
-      tag: 'Debt',
-      description: prop.note || `Accepted from ${prop.senderName}`,
+      payMethodId: payMethodId || this.paymentMethods[0]?.id || 'cash',
+      tag: prop.isRepayment ? 'Repayment' : 'Shared Debt',
+      description: txDesc,
       date: prop.date,
       timestamp: Date.now(),
-      status: 'accepted'
+      status: 'accepted',
+      proposalId: prop.id
     };
-    this.addTransaction(newTx);
+    await this.addTransaction(newTx);
 
-    this.proposals = this.proposals.map((p) =>
-      p.id === proposalId ? { ...p, status: 'accepted' as const } : p
-    );
-    this.saveToLocalStorageCache('proposals', this.proposals);
-    this.notify();
+    // Update proposal document in Firestore / localStorage
+    await this.updateProposal(updatedProp);
     return { success: true };
   }
 
-  rejectProposal(proposalId: string): void {
-    this.proposals = this.proposals.map((p) =>
-      p.id === proposalId ? { ...p, status: 'rejected' as const } : p
-    );
-    this.saveToLocalStorageCache('proposals', this.proposals);
-    this.notify();
+  async disputeProposal(proposalId: string, reason: string): Promise<{ success: boolean; error?: string }> {
+    const prop = this.proposals.find((p) => p.id === proposalId);
+    if (!prop) return { success: false, error: 'Proposal not found' };
+
+    const updated: EcOProposal = {
+      ...prop,
+      status: 'disputed',
+      disputeReason: reason.trim() || 'Amount or terms disputed',
+      updatedAt: Date.now()
+    };
+    await this.updateProposal(updated);
+    return { success: true };
+  }
+
+  async rejectProposal(proposalId: string): Promise<void> {
+    const prop = this.proposals.find((p) => p.id === proposalId);
+    if (!prop) return;
+    const updated: EcOProposal = {
+      ...prop,
+      status: 'rejected',
+      updatedAt: Date.now()
+    };
+    await this.updateProposal(updated);
   }
 
   async saveIssueReport(report: IssueReport): Promise<void> {
