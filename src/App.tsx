@@ -775,9 +775,10 @@ export default function App() {
             <SettingsView
               settings={settings}
               user={user}
-              onSaveSettings={(s) => {
+              showToast={showToast}
+              onSaveSettings={(s, msg) => {
                 repository.saveSettings(s);
-                showToast('Settings saved.');
+                showToast(msg || 'Settings saved.');
               }}
               onExportBackup={handleExportBackup}
               onOpenImportModal={() => setIsOnboardingOpen(true)}
