@@ -685,11 +685,13 @@ export default function App() {
               onAddPerson={(name, phone) => {
                 const newPerson: PersonRecord = {
                   id: `person_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                  name,
-                  phone,
+                  name: name.trim(),
                   isConnected: false,
                   createdAt: new Date().toISOString()
                 };
+                if (phone && phone.trim()) {
+                  newPerson.phone = phone.trim();
+                }
                 repository.addPerson(newPerson);
                 showToast(`Added ${name} to ledger.`);
               }}
@@ -861,11 +863,13 @@ export default function App() {
         onCreatePersonInline={(name, phone) => {
           const newPerson: PersonRecord = {
             id: `person_${Date.now()}`,
-            name,
-            phone,
+            name: name.trim(),
             isConnected: false,
             createdAt: new Date().toISOString()
           };
+          if (phone && phone.trim()) {
+            newPerson.phone = phone.trim();
+          }
           repository.addPerson(newPerson);
           return newPerson.id;
         }}
