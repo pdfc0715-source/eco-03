@@ -17,7 +17,7 @@ import { createDefaultPaymentMethods } from '../domain/paymentMethods';
 import { SEVEN_DAYS_MS } from '../domain/dates';
 import { EcoBackupV1, migrateBackupV1ToDomain } from '../domain/backupV1';
 import { invertProposalDirection, generateDefaultConnectionCode } from '../domain/connections';
-import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from './firebase';
+import { db, isFirebaseConfigured, handleFirestoreError, OperationType, sanitizeForFirestore } from './firebase';
 import {
   doc,
   collection,
@@ -76,6 +76,11 @@ export class HybridFirebaseRepository {
     return `${userPrefix}${key}`;
   }
 
+  private async setDocSafe(docRef: any, data: any, options?: { merge?: boolean }) {
+    const sanitized = sanitizeForFirestore(data);
+    return options ? setDoc(docRef, sanitized, options) : setDoc(docRef, sanitized);
+  }
+
   /**
    * Initializes data streams for the logged-in user.
    */
@@ -114,7 +119,7 @@ export class HybridFirebaseRepository {
             currencySymbol: '৳'
           };
 
-          await setDoc(userRef, {
+          await this.setDocSafe(userRef, {
             ...initialSettings,
             uid: userId,
             displayName: userDisplayName || 'EcO User',
@@ -126,7 +131,7 @@ export class HybridFirebaseRepository {
           // Seed default wallets
           const defaultMethods = createDefaultPaymentMethods();
           for (const m of defaultMethods) {
-            await setDoc(doc(db, 'users', userId, 'paymentMethods', m.id), m);
+            await this.setDocSafe(doc(db, 'users', userId, 'paymentMethods', m.id), m);
           }
 
           // Seed default income sources
@@ -136,7 +141,7 @@ export class HybridFirebaseRepository {
             { id: 'src_investment', name: 'Investments', description: 'Dividends and profits', createdAt: new Date().toISOString() }
           ];
           for (const s of defaultSources) {
-            await setDoc(doc(db, 'users', userId, 'sources', s.id), s);
+            await this.setDocSafe(doc(db, 'users', userId, 'sources', s.id), s);
           }
 
           this.firstLaunchDone = false;
@@ -337,7 +342,7 @@ export class HybridFirebaseRepository {
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
         const userRef = doc(db, 'users', this.activeUserId);
-        await setDoc(userRef, { setupComplete: val, updatedAt: new Date().toISOString() }, { merge: true });
+        await this.setDocSafe(userRef, { setupComplete: val, updatedAt: new Date().toISOString() }, { merge: true });
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, `users/${this.activeUserId}`);
       }
@@ -375,7 +380,7 @@ export class HybridFirebaseRepository {
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
         const userRef = doc(db, 'users', this.activeUserId);
-        await setDoc(userRef, { ...settings, updatedAt: new Date().toISOString() }, { merge: true });
+        await this.setDocSafe(userRef, { ...settings, updatedAt: new Date().toISOString() }, { merge: true });
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, `users/${this.activeUserId}`);
       }
@@ -406,7 +411,7 @@ export class HybridFirebaseRepository {
 
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
-        await setDoc(doc(db, 'users', this.activeUserId, 'paymentMethods', method.id), updated);
+        await this.setDocSafe(doc(db, 'users', this.activeUserId, 'paymentMethods', method.id), updated);
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, `users/${this.activeUserId}/paymentMethods/${method.id}`);
       }
@@ -432,7 +437,7 @@ export class HybridFirebaseRepository {
 
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
-        await setDoc(doc(db, 'users', this.activeUserId, 'expenses', expense.id), expense);
+        await this.setDocSafe(doc(db, 'users', this.activeUserId, 'expenses', expense.id), expense);
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, `users/${this.activeUserId}/expenses/${expense.id}`);
       }
@@ -465,7 +470,7 @@ export class HybridFirebaseRepository {
 
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
-        await setDoc(doc(db, 'users', this.activeUserId, 'recurringExpenses', rec.id), rec);
+        await this.setDocSafe(doc(db, 'users', this.activeUserId, 'recurringExpenses', rec.id), rec);
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, `users/${this.activeUserId}/recurringExpenses/${rec.id}`);
       }
@@ -498,7 +503,7 @@ export class HybridFirebaseRepository {
 
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
-        await setDoc(doc(db, 'users', this.activeUserId, 'earnings', earning.id), earning);
+        await this.setDocSafe(doc(db, 'users', this.activeUserId, 'earnings', earning.id), earning);
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, `users/${this.activeUserId}/earnings/${earning.id}`);
       }
@@ -531,7 +536,7 @@ export class HybridFirebaseRepository {
 
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
-        await setDoc(doc(db, 'users', this.activeUserId, 'transfers', transfer.id), transfer);
+        await this.setDocSafe(doc(db, 'users', this.activeUserId, 'transfers', transfer.id), transfer);
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, `users/${this.activeUserId}/transfers/${transfer.id}`);
       }
@@ -564,7 +569,7 @@ export class HybridFirebaseRepository {
 
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
-        await setDoc(doc(db, 'users', this.activeUserId, 'people', person.id), person);
+        await this.setDocSafe(doc(db, 'users', this.activeUserId, 'people', person.id), person);
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, `users/${this.activeUserId}/people/${person.id}`);
       }
@@ -582,7 +587,7 @@ export class HybridFirebaseRepository {
 
       if (isFirebaseConfigured() && db && this.activeUserId) {
         try {
-          await setDoc(doc(db, 'users', this.activeUserId, 'people', person.id), person, { merge: true });
+          await this.setDocSafe(doc(db, 'users', this.activeUserId, 'people', person.id), person, { merge: true });
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `users/${this.activeUserId}/people/${person.id}`);
         }
@@ -616,7 +621,7 @@ export class HybridFirebaseRepository {
 
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
-        await setDoc(doc(db, 'users', this.activeUserId, 'transactions', tx.id), tx);
+        await this.setDocSafe(doc(db, 'users', this.activeUserId, 'transactions', tx.id), tx);
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, `users/${this.activeUserId}/transactions/${tx.id}`);
       }
@@ -649,7 +654,7 @@ export class HybridFirebaseRepository {
 
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
-        await setDoc(doc(db, 'users', this.activeUserId, 'sources', source.id), source);
+        await this.setDocSafe(doc(db, 'users', this.activeUserId, 'sources', source.id), source);
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, `users/${this.activeUserId}/sources/${source.id}`);
       }
@@ -671,7 +676,7 @@ export class HybridFirebaseRepository {
 
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
-        await setDoc(doc(db, 'users', this.activeUserId, 'notifications', notification.id), notification);
+        await this.setDocSafe(doc(db, 'users', this.activeUserId, 'notifications', notification.id), notification);
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, `users/${this.activeUserId}/notifications/${notification.id}`);
       }
@@ -686,7 +691,7 @@ export class HybridFirebaseRepository {
 
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
-        await setDoc(doc(db, 'users', this.activeUserId, 'notifications', id), { read: true }, { merge: true });
+        await this.setDocSafe(doc(db, 'users', this.activeUserId, 'notifications', id), { read: true }, { merge: true });
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, `users/${this.activeUserId}/notifications/${id}`);
       }
@@ -798,7 +803,7 @@ export class HybridFirebaseRepository {
   async saveIssueReport(report: IssueReport): Promise<void> {
     if (isFirebaseConfigured() && db && this.activeUserId) {
       try {
-        await setDoc(doc(db, 'users', this.activeUserId, 'issueReports', report.id), report);
+        await this.setDocSafe(doc(db, 'users', this.activeUserId, 'issueReports', report.id), report);
       } catch (err) {
         console.warn('Could not post issue report:', err);
       }
@@ -975,7 +980,7 @@ export class HybridFirebaseRepository {
         }
 
         // Reset user root doc
-        await setDoc(doc(db, 'users', this.activeUserId), {
+        await this.setDocSafe(doc(db, 'users', this.activeUserId), {
           setupComplete: false,
           updatedAt: new Date().toISOString()
         }, { merge: true });
