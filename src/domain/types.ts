@@ -92,6 +92,7 @@ export interface PersonRecord {
   phone?: string;
   isConnected: boolean;
   connectionCode?: string;
+  connectedUserId?: string;
   createdAt: string;
 }
 
@@ -112,7 +113,8 @@ export interface PeerTransactionRecord {
   fromRequest?: boolean;
   timestamp: number;
   // Connected transaction status if EcO-to-EcO
-  status?: 'local' | 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'expired_local_only';
+  status?: 'local' | 'pending' | 'accepted' | 'rejected' | 'disputed' | 'cancelled' | 'expired_local_only';
+  proposalId?: string;
   // Cash-out / transfer fee options
   chargeApplied?: boolean;
   chargeRate?: number;
@@ -162,29 +164,45 @@ export type ConnectionStatus = 'connected' | 'pending_incoming' | 'pending_outgo
 
 export interface EcOConnection {
   id: string;
+  participants?: string[];
+  userAId?: string;
+  userAName?: string;
+  userACode?: string;
+  userBId?: string;
+  userBName?: string;
+  userBCode?: string;
   peerUserId: string;
   peerName: string;
   peerCode: string;
   status: ConnectionStatus;
+  initiatedBy?: string;
   createdAt: number;
   updatedAt: number;
 }
 
-export type ProposalStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled';
+export type ProposalStatus = 'pending' | 'accepted' | 'rejected' | 'disputed' | 'cancelled';
 
 export interface EcOProposal {
   id: string;
+  participants?: string[];
+  connectionId?: string;
   senderUserId: string;
   senderName: string;
+  senderCode?: string;
   recipientUserId: string;
   recipientName: string;
-  originalSenderType: 'give' | 'take'; // What sender did
+  recipientCode?: string;
+  originalSenderType: 'give' | 'take'; // What sender did (give = lent money / receivable; take = borrowed / payable)
   recipientPerspectiveType: 'give' | 'take'; // Inverted for recipient
+  isRepayment?: boolean; // Whether this proposal is a loan repayment
   amount: number;
   date: string;
   note?: string;
+  payMethodId?: string;
   status: ProposalStatus;
+  disputeReason?: string;
   createdAt: number;
+  updatedAt?: number;
   settledTxId?: string;
 }
 
