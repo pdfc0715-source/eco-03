@@ -346,23 +346,75 @@ export const Navigation: React.FC<NavigationProps> = ({
       )}
 
       {/* --- Mobile Bottom Tab Bar (Fixed) --- */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 h-16 bg-[#0C0E12]/95 backdrop-blur-md border-t border-[#3D4943]/40 z-30 flex items-center justify-around px-2">
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const isActive = currentTab === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => onSelectTab(item.id)}
-              className={`flex flex-col items-center justify-center flex-1 py-1 transition-colors min-h-[44px] cursor-pointer ${
-                isActive ? 'text-[#73E3B4]' : 'text-[#87948C]'
-              }`}
-            >
-              <Icon className="w-4 h-4 mb-1" />
-              <span className="text-[10px] font-medium truncate max-w-[56px]">{item.label.split(' ')[0]}</span>
-            </button>
-          );
-        })}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 h-16 bg-[#0C0E12]/95 backdrop-blur-md border-t border-[#3D4943]/40 z-30 flex items-center justify-around px-1">
+        <button
+          type="button"
+          onClick={() => onSelectTab('dashboard')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 transition-colors min-h-[44px] cursor-pointer ${
+            currentTab === 'dashboard' ? 'text-[#73E3B4]' : 'text-[#87948C]'
+          }`}
+        >
+          <LayoutDashboard className="w-4 h-4 mb-0.5" />
+          <span className="text-[10px] font-medium truncate">Home</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onSelectTab('list')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 transition-colors min-h-[44px] cursor-pointer ${
+            currentTab === 'list' ? 'text-[#73E3B4]' : 'text-[#87948C]'
+          }`}
+        >
+          <ReceiptText className="w-4 h-4 mb-0.5" />
+          <span className="text-[10px] font-medium truncate">History</span>
+        </button>
+
+        {/* Central Prominent Quick '+' Add Entry Button */}
+        <button
+          type="button"
+          onClick={onOpenAddModal}
+          className="flex flex-col items-center justify-center flex-1 py-1 -mt-4 transition-transform active:scale-95 cursor-pointer group"
+          aria-label="Add Entry"
+          title="Add Expense, Inflow, Transfer, or Debt"
+        >
+          <div className="w-11 h-11 rounded-full bg-[#55C79A] hover:bg-[#73E3B4] text-[#003826] shadow-lg shadow-[#55C79A]/20 flex items-center justify-center transition-all group-hover:scale-105 border-2 border-[#0C0E12]">
+            <Plus className="w-5 h-5 stroke-[2.5]" />
+          </div>
+          <span className="text-[9px] font-semibold text-[#73E3B4] mt-0.5">Add</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onSelectTab('wallets')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 transition-colors min-h-[44px] cursor-pointer ${
+            currentTab === 'wallets' ? 'text-[#73E3B4]' : 'text-[#87948C]'
+          }`}
+        >
+          <WalletCards className="w-4 h-4 mb-0.5" />
+          <span className="text-[10px] font-medium truncate">Wallets</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onSelectTab('people')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 transition-colors min-h-[44px] cursor-pointer ${
+            currentTab === 'people' ? 'text-[#73E3B4]' : 'text-[#87948C]'
+          }`}
+        >
+          <Users2 className="w-4 h-4 mb-0.5" />
+          <span className="text-[10px] font-medium truncate">People</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onSelectTab('stats')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 transition-colors min-h-[44px] cursor-pointer ${
+            currentTab === 'stats' ? 'text-[#73E3B4]' : 'text-[#87948C]'
+          }`}
+        >
+          <BarChart3 className="w-4 h-4 mb-0.5" />
+          <span className="text-[10px] font-medium truncate">Stats</span>
+        </button>
       </nav>
 
       {/* iOS Safari Install Guide Modal */}
