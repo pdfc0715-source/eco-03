@@ -160,7 +160,16 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         }`
       );
     } catch (err: any) {
-      setImportSummary(`Import failed: ${err?.message || 'Unknown error'}`);
+      let msg = err?.message || 'Unknown error';
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed.error) {
+          msg = parsed.error;
+        }
+      } catch {
+        // Not a JSON error
+      }
+      setImportSummary(`Import failed: ${msg}`);
     } finally {
       setIsImporting(false);
     }
