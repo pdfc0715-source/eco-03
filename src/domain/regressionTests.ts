@@ -572,5 +572,42 @@ export function runAllRegressionTests(): TestResult[] {
     results.push({ name: 'Adaptive Budget Overspend Test', passed: false, error: e.message });
   }
 
+  // Test 17: eco-backup v1 Import with missing phone (Never creates undefined property)
+  try {
+    const mockBackup = {
+      format: 'eco-backup',
+      formatVersion: 1,
+      exportedAt: '2026-10-25T10:00:00.000Z',
+      app: { name: 'EcO', purpose: 'Ledger' },
+      data: {
+        people: [
+          {
+            id: 'A8clAu47ApAwQprM4jkL',
+            fields: {
+              name: 'Shakil Khan',
+              // No phone field here!
+              createdAt: '2026-10-20T00:00:00.000Z'
+            }
+          }
+        ]
+      },
+      integrity: { complete: true, counts: { people: 1 } }
+    };
+
+    const domain = migrateBackupV1ToDomain(mockBackup as any);
+    const person = domain.people[0];
+    const hasUndefinedPhone = Object.prototype.hasOwnProperty.call(person, 'phone') && person.phone === undefined;
+    const passed = person.id === 'A8clAu47ApAwQprM4jkL' && person.name === 'Shakil Khan' && !hasUndefinedPhone;
+
+    results.push({
+      name: 'Backup Import - Person without phone avoids undefined field',
+      passed,
+      actual: { hasUndefinedPhone, person },
+      expected: { hasUndefinedPhone: false }
+    });
+  } catch (e: any) {
+    results.push({ name: 'Backup Import Person Phone Test', passed: false, error: e.message });
+  }
+
   return results;
 }
