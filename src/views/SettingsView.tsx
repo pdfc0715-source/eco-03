@@ -37,7 +37,8 @@ import { AuthUserProfile } from '../data/firebase';
 interface SettingsViewProps {
   settings: UserSettings;
   user?: AuthUserProfile | null;
-  onSaveSettings: (settings: UserSettings) => void;
+  onSaveSettings: (settings: UserSettings, message?: string) => void;
+  showToast?: (message: string) => void;
   onExportBackup: () => void;
   onOpenImportModal: () => void;
   onReRunOnboarding?: () => void;
@@ -54,6 +55,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
   user,
   onSaveSettings,
+  showToast,
   onExportBackup,
   onOpenImportModal,
   onReRunOnboarding,
@@ -128,63 +130,76 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const discretionary = Math.max(0, rawMargin - bufferAmount);
   const dailySuggested = discretionary / 30;
 
-  const handleThemeChange = (newTheme: 'dark' | 'light') => {
-    setTheme(newTheme);
+  const persistSettings = (patch: Partial<UserSettings>, notificationMessage?: string) => {
     const updated: UserSettings = {
       ...settings,
-      theme: newTheme,
+      theme,
       colorPalette,
       budgetMode,
       directDailyBudget: parseFloat(directBudgetStr) || 0,
-      monthlyIncome: numIncome,
-      monthlyFixed: numFixed,
-      monthlySavings: numSavings,
-      monthlyEmergency: numEmergency,
-      bufferPct: numBufferPct,
+      monthlyIncome: parseFloat(monthlyIncomeStr) || 0,
+      monthlyFixed: parseFloat(monthlyFixedStr) || 0,
+      monthlySavings: parseFloat(monthlySavingsStr) || 0,
+      monthlyEmergency: parseFloat(monthlyEmergencyStr) || 0,
+      bufferPct: Math.min(100, Math.max(0, parseFloat(bufferPctStr) || 0)),
       categories,
-      tags
+      tags,
+      ...patch
     };
-    onSaveSettings(updated);
+
+    onSaveSettings(updated, notificationMessage);
+    if (showToast && notificationMessage) {
+      showToast(notificationMessage);
+    }
+    setSavedSuccess(true);
+    setTimeout(() => setSavedSuccess(false), 2500);
+  };
+
+  const handleThemeChange = (newTheme: 'dark' | 'light') => {
+    setTheme(newTheme);
+    persistSettings({ theme: newTheme }, `Theme switched to ${newTheme === 'dark' ? 'Dark' : 'Light'} Mode.`);
   };
 
   const handlePaletteChange = (newPalette: ColorPalette) => {
     setColorPalette(newPalette);
-    const updated: UserSettings = {
-      ...settings,
-      theme,
-      colorPalette: newPalette,
-      budgetMode,
-      directDailyBudget: parseFloat(directBudgetStr) || 0,
-      monthlyIncome: numIncome,
-      monthlyFixed: numFixed,
-      monthlySavings: numSavings,
-      monthlyEmergency: numEmergency,
-      bufferPct: numBufferPct,
-      categories,
-      tags
-    };
-    onSaveSettings(updated);
+    persistSettings({ colorPalette: newPalette }, `Color palette switched to ${newPalette}.`);
   };
 
-  const handleSaveBudget = () => {
-    const updated: UserSettings = {
-      ...settings,
-      theme,
-      colorPalette,
-      budgetMode,
-      directDailyBudget: parseFloat(directBudgetStr) || 0,
-      monthlyIncome: numIncome,
-      monthlyFixed: numFixed,
-      monthlySavings: numSavings,
-      monthlyEmergency: numEmergency,
-      bufferPct: numBufferPct,
-      categories,
-      tags
-    };
+  const handleBudgetModeSelect = (newMode: BudgetMode) => {
+    setBudgetMode(newMode);
+    const label = newMode === 'calculated' ? 'Smart Formula' : newMode === 'direct' ? 'Direct Target' : 'Off';
+    persistSettings({ budgetMode: newMode }, `Budget mode set to ${label}.`);
+  };
 
-    onSaveSettings(updated);
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 3000);
+  const handleDirectBudgetBlur = () => {
+    const val = parseFloat(directBudgetStr) || 0;
+    persistSettings({ directDailyBudget: val }, `Daily spend cap set to ${formatTaka(val)}/day.`);
+  };
+
+  const handleIncomeBlur = () => {
+    const val = parseFloat(monthlyIncomeStr) || 0;
+    persistSettings({ monthlyIncome: val }, `Monthly income updated to ${formatTaka(val)}.`);
+  };
+
+  const handleFixedBlur = () => {
+    const val = parseFloat(monthlyFixedStr) || 0;
+    persistSettings({ monthlyFixed: val }, `Fixed costs updated to ${formatTaka(val)}.`);
+  };
+
+  const handleSavingsBlur = () => {
+    const val = parseFloat(monthlySavingsStr) || 0;
+    persistSettings({ monthlySavings: val }, `Savings target updated to ${formatTaka(val)}.`);
+  };
+
+  const handleEmergencyBlur = () => {
+    const val = parseFloat(monthlyEmergencyStr) || 0;
+    persistSettings({ monthlyEmergency: val }, `Emergency cushion updated to ${formatTaka(val)}.`);
+  };
+
+  const handleBufferChange = (valStr: string) => {
+    setBufferPctStr(valStr);
+    const val = Math.min(100, Math.max(0, parseFloat(valStr) || 0));
+    persistSettings({ bufferPct: val }, `Buffer percentage updated to ${val}%.`);
   };
 
   const handleSaveName = async () => {
@@ -289,26 +304,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     e.preventDefault();
     const t = newCategoryInput.trim();
     if (t && !categories.includes(t)) {
-      setCategories([...categories, t]);
+      const updated = [...categories, t];
+      setCategories(updated);
       setNewCategoryInput('');
+      persistSettings({ categories: updated }, `Category "${t}" added.`);
     }
   };
 
   const handleRemoveCategory = (cat: string) => {
-    setCategories(categories.filter((c) => c !== cat));
+    const updated = categories.filter((c) => c !== cat);
+    setCategories(updated);
+    persistSettings({ categories: updated }, `Category "${cat}" removed.`);
   };
 
   const handleAddTag = (e: React.FormEvent) => {
     e.preventDefault();
     const t = newTagInput.trim();
     if (t && !tags.includes(t)) {
-      setTags([...tags, t]);
+      const updated = [...tags, t];
+      setTags(updated);
       setNewTagInput('');
+      persistSettings({ tags: updated }, `Tag "${t}" added.`);
     }
   };
 
   const handleRemoveTag = (tg: string) => {
-    setTags(tags.filter((t) => t !== tg));
+    const updated = tags.filter((t) => t !== tg);
+    setTags(updated);
+    persistSettings({ tags: updated }, `Tag "${tg}" removed.`);
   };
 
   return (
@@ -322,19 +345,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={handleSaveBudget}
-          className="btn-md px-4 rounded-lg bg-[#55C79A] hover:bg-[#73E3B4] text-[#003826] font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors shadow-sm self-start sm:self-auto cursor-pointer"
-        >
-          <Save className="w-4 h-4" />
-          <span>Save Budget Settings</span>
-        </button>
+        <div className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#0C0E12] border border-[#3D4943]/50 text-xs text-[#73E3B4] font-medium self-start sm:self-auto shadow-sm">
+          <span className="w-2 h-2 rounded-full bg-[#73E3B4] animate-pulse" />
+          <span>Direct auto-save active</span>
+        </div>
       </div>
 
       {savedSuccess && (
-        <div className="p-3.5 rounded-xl bg-[#73E3B4]/10 border border-[#73E3B4]/30 text-[#73E3B4] text-xs flex items-center gap-2 shadow-sm animate-in fade-in">
+        <div className="p-3 rounded-xl bg-[#73E3B4]/10 border border-[#73E3B4]/30 text-[#73E3B4] text-xs flex items-center gap-2 shadow-sm animate-in fade-in">
           <Check className="w-4 h-4" />
-          <span>Budget settings saved and applied to your account.</span>
+          <span>Settings updated and synced to your account.</span>
         </div>
       )}
 
@@ -651,10 +671,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <button
                 key={m.id}
                 type="button"
-                onClick={() => setBudgetMode(m.id)}
+                onClick={() => handleBudgetModeSelect(m.id)}
                 className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
                   budgetMode === m.id
-                    ? 'bg-[#0C0E12] border-[#73E3B4] text-[#73E3B4]'
+                    ? 'bg-[#0C0E12] border-[#73E3B4] text-[#73E3B4] shadow-sm'
                     : 'bg-[#0C0E12]/50 border-[#3D4943]/40 text-[#BCCAC1] hover:border-[#3D4943]/80'
                 }`}
               >
@@ -676,6 +696,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   min="0"
                   value={directBudgetStr}
                   onChange={(e) => setDirectBudgetStr(e.target.value)}
+                  onBlur={handleDirectBudgetBlur}
                   className="w-full px-3 py-2 rounded-lg bg-[#1A1C20] border border-[#3D4943]/50 text-sm font-mono text-[#E2E2E8] outline-none focus:border-[#73E3B4]"
                 />
                 <span className="text-xs text-[#87948C]">৳ / day</span>
@@ -684,79 +705,170 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
 
           {budgetMode === 'calculated' && (
-            <div className="space-y-3.5 p-4 rounded-xl bg-[#0C0E12] border border-[#3D4943]/40">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-4 p-4 sm:p-5 rounded-xl bg-[#0C0E12] border border-[#3D4943]/40">
+              {/* Header with optional formula dropdown */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-[#3D4943]/30">
+                <div>
+                  <h4 className="text-sm font-bold text-[#E2E2E8]">Smart Budget Formula</h4>
+                  <p className="text-[11px] text-[#87948C]">
+                    Enter your planned financial targets below. Changes auto-save directly.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowFormulaDetails(!showFormulaDetails)}
+                  className="text-xs text-[#73E3B4] hover:underline flex items-center gap-1.5 cursor-pointer self-start sm:self-auto font-medium"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{showFormulaDetails ? 'Hide calculation details' : 'View formula breakdown'}</span>
+                  <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showFormulaDetails ? 'rotate-180' : ''}`} />
+                </button>
+              </div>
+
+              {/* Optional Collapsible Formula Card */}
+              {showFormulaDetails && (
+                <div className="p-4 rounded-xl bg-[#111317] border border-[#73E3B4]/40 font-mono text-xs space-y-3 animate-in fade-in duration-150">
+                  <div className="text-[11px] font-bold text-[#73E3B4] font-sans uppercase tracking-wider">
+                    Smart Budget Formula
+                  </div>
+                  <div className="p-3 rounded-lg bg-[#1A1C20] border border-[#3D4943]/40 text-[#73E3B4] text-xs font-semibold space-y-1">
+                    <div>F = max(Planned Fixed, Actual Fixed spent) &nbsp;·&nbsp; E = max(Planned Emergency, Actual Emergency spent)</div>
+                    <div>A = (I − F − S − E) × (1 − b/100)</div>
+                    <div>Today's Budget = (A − T) ÷ (D − d + 1)</div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-[#BCCAC1]">
+                    <div><span className="font-bold text-white font-mono">I</span> &nbsp; Monthly income</div>
+                    <div><span className="font-bold text-white font-mono">F</span> &nbsp; Fixed costs — planned, or actual if it runs over</div>
+                    <div><span className="font-bold text-white font-mono">S</span> &nbsp; Monthly savings target</div>
+                    <div><span className="font-bold text-white font-mono">E</span> &nbsp; Emergency fund — planned, or actual if it runs over</div>
+                    <div><span className="font-bold text-white font-mono">b</span> &nbsp; Buffer % (safety margin)</div>
+                    <div><span className="font-bold text-white font-mono">T</span> &nbsp; Regular-type spend so far this month only</div>
+                    <div><span className="font-bold text-white font-mono">D</span> &nbsp; Days in month</div>
+                    <div><span className="font-bold text-white font-mono">d</span> &nbsp; Today's day number</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Input Form Fields */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div>
                   <label className="block text-[11px] font-medium text-[#BCCAC1] mb-1">
-                    Expected Monthly Income (৳)
+                    Monthly Income
                   </label>
                   <input
                     type="number"
                     step="any"
+                    placeholder="e.g. 30000"
                     value={monthlyIncomeStr}
                     onChange={(e) => setMonthlyIncomeStr(e.target.value)}
+                    onBlur={handleIncomeBlur}
                     className="w-full px-3 py-2 rounded-lg bg-[#1A1C20] border border-[#3D4943]/50 text-xs font-mono text-[#E2E2E8] outline-none focus:border-[#73E3B4]"
                   />
                 </div>
 
                 <div>
                   <label className="block text-[11px] font-medium text-[#BCCAC1] mb-1">
-                    Planned Fixed Bills (Rent, Net, Utilities) (৳)
+                    Fixed Monthly Costs
                   </label>
                   <input
                     type="number"
                     step="any"
+                    placeholder="e.g. 12000"
                     value={monthlyFixedStr}
                     onChange={(e) => setMonthlyFixedStr(e.target.value)}
+                    onBlur={handleFixedBlur}
                     className="w-full px-3 py-2 rounded-lg bg-[#1A1C20] border border-[#3D4943]/50 text-xs font-mono text-[#E2E2E8] outline-none focus:border-[#73E3B4]"
                   />
+                  <p className="text-[10px] text-[#87948C] mt-1">
+                    Pre-set fixed cost does not affect daily budget until actual spending exceeds this value.
+                  </p>
                 </div>
 
                 <div>
                   <label className="block text-[11px] font-medium text-[#BCCAC1] mb-1">
-                    Monthly Savings Target (৳)
+                    Monthly Savings Target
                   </label>
                   <input
                     type="number"
                     step="any"
+                    placeholder="e.g. 5000"
                     value={monthlySavingsStr}
                     onChange={(e) => setMonthlySavingsStr(e.target.value)}
+                    onBlur={handleSavingsBlur}
                     className="w-full px-3 py-2 rounded-lg bg-[#1A1C20] border border-[#3D4943]/50 text-xs font-mono text-[#E2E2E8] outline-none focus:border-[#73E3B4]"
                   />
                 </div>
 
                 <div>
                   <label className="block text-[11px] font-medium text-[#BCCAC1] mb-1">
-                    Emergency Cushion Reserve (৳)
+                    Emergency Fund Contribution
                   </label>
                   <input
                     type="number"
                     step="any"
+                    placeholder="e.g. 2000"
                     value={monthlyEmergencyStr}
                     onChange={(e) => setMonthlyEmergencyStr(e.target.value)}
+                    onBlur={handleEmergencyBlur}
                     className="w-full px-3 py-2 rounded-lg bg-[#1A1C20] border border-[#3D4943]/50 text-xs font-mono text-[#E2E2E8] outline-none focus:border-[#73E3B4]"
                   />
+                  <p className="text-[10px] text-[#87948C] mt-1">
+                    Pre-set emergency fund does not affect daily budget until actual spending exceeds this value.
+                  </p>
                 </div>
               </div>
 
-              <div>
-                <label className="block text-[11px] font-medium text-[#BCCAC1] mb-1">
-                  Safety Buffer ({bufferPctStr}%)
-                </label>
+              {/* Buffer Percentage */}
+              <div className="pt-1">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-medium text-[#BCCAC1]">
+                    Buffer Percentage
+                  </label>
+                  <span className="text-xs font-mono font-bold text-[#73E3B4] px-2 py-0.5 rounded bg-[#1A1C20] border border-[#3D4943]/40">
+                    {bufferPctStr}%
+                  </span>
+                </div>
                 <input
                   type="range"
                   min="0"
                   max="30"
                   step="1"
                   value={bufferPctStr}
-                  onChange={(e) => setBufferPctStr(e.target.value)}
-                  className="w-full accent-[#73E3B4]"
+                  onChange={(e) => handleBufferChange(e.target.value)}
+                  className="w-full accent-[#73E3B4] cursor-pointer"
                 />
               </div>
 
-              <div className="p-3 rounded-lg bg-[#1A1C20] border border-[#3D4943]/30 flex items-center justify-between text-xs font-mono">
-                <span className="text-[#87948C]">Target Baseline Daily Allowance:</span>
-                <span className="text-[#73E3B4] font-bold text-sm">{formatTaka(dailySuggested)} / day</span>
+              {/* Final Computed Output Preview */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                <div className="p-3.5 rounded-xl bg-[#1A1C20] border border-[#3D4943]/40 flex flex-col justify-between">
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-[#BCCAC1]">
+                    Monthly Spendable (A)
+                  </span>
+                  <div className="mt-2">
+                    <div className="text-lg sm:text-xl font-mono font-bold text-[#73E3B4]">
+                      {numIncome > 0 ? formatTaka(discretionary) : '৳ —'}
+                    </div>
+                    <p className="text-[11px] text-[#87948C] mt-0.5">
+                      {numIncome > 0 ? 'Planned discretionary spend for month' : 'Fill in your income above to preview.'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-[#1A1C20] border border-[#73E3B4]/40 flex flex-col justify-between shadow-sm">
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-[#73E3B4]">
+                    Today's Adaptive Budget
+                  </span>
+                  <div className="mt-2">
+                    <div className="text-lg sm:text-xl font-mono font-bold text-[#73E3B4]">
+                      {numIncome > 0 ? `${formatTaka(dailySuggested)} / day` : '৳ —'}
+                    </div>
+                    <p className="text-[11px] text-[#87948C] mt-0.5">
+                      {numIncome > 0 ? 'Baseline target daily allowance' : 'Fill in your income above to preview.'}
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
           )}
