@@ -172,9 +172,81 @@
         "type": { "type": "string", "enum": ["reminder", "system", "sync"] }
       },
       "required": ["id", "title", "message", "read"]
+    },
+    "ConnectionCode": {
+      "title": "ConnectionCode",
+      "description": "Public directory mapping EcO Connection Code to user account",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["code", "userId"]
+    },
+    "Connection": {
+      "title": "Connection",
+      "description": "Shared connection between two EcO users",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "participants": { "type": "array" },
+        "userAId": { "type": "string" },
+        "userAName": { "type": "string" },
+        "userACode": { "type": "string" },
+        "userBId": { "type": "string" },
+        "userBName": { "type": "string" },
+        "userBCode": { "type": "string" },
+        "status": { "type": "string", "enum": ["connected", "pending_incoming", "pending_outgoing", "rejected", "disconnected"] },
+        "initiatedBy": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "participants", "status"]
+    },
+    "Proposal": {
+      "title": "Proposal",
+      "description": "Shared lending, borrowing, or repayment transaction proposal",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "participants": { "type": "array" },
+        "connectionId": { "type": "string" },
+        "senderUserId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderCode": { "type": "string" },
+        "recipientUserId": { "type": "string" },
+        "recipientName": { "type": "string" },
+        "recipientCode": { "type": "string" },
+        "originalSenderType": { "type": "string", "enum": ["give", "take"] },
+        "recipientPerspectiveType": { "type": "string", "enum": ["give", "take"] },
+        "amount": { "type": "number" },
+        "isRepayment": { "type": "boolean" },
+        "date": { "type": "string" },
+        "note": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "rejected", "disputed", "cancelled"] },
+        "disputeReason": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "participants", "senderUserId", "recipientUserId", "amount", "status"]
     }
   },
   "firestore": {
+    "/connectionCodes/{code}": {
+      "schema": "ConnectionCode",
+      "description": "Directory of EcO Connection Codes"
+    },
+    "/connections/{connId}": {
+      "schema": "Connection",
+      "description": "Shared user connections"
+    },
+    "/proposals/{proposalId}": {
+      "schema": "Proposal",
+      "description": "Shared transaction proposals awaiting mutual confirmation"
+    },
     "/users/{userId}": {
       "schema": "UserProfile",
       "description": "User profile settings and configuration document"
